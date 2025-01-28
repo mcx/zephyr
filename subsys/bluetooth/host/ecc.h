@@ -38,11 +38,21 @@ struct bt_pub_key_cb {
  *  Compare the Public key to the Bluetooth specification defined debug public
  *  key.
  *
- *  @param pub_key The public key to compare.
+ *  @param cmp_pub_key The public key to compare.
  *
  *  @return True if the public key is the debug public key.
  */
-bool bt_pub_key_is_debug(uint8_t *pub_key);
+bool bt_pub_key_is_debug(uint8_t *cmp_pub_key);
+
+/*  @brief Check if public key is valid.
+ *
+ *  Verify that the public key is valid, e.g. that its coordinates lie on the eliptic curve.
+ *
+ *  @param key The public key to validate.
+ *
+ *  @return True if the public key is valid.
+ */
+bool bt_pub_key_is_valid(const uint8_t key[BT_PUB_KEY_LEN]);
 
 /*  @brief Generate a new Public Key.
  *

@@ -16,7 +16,8 @@
 #include <zephyr/device.h>
 #include <zephyr/init.h>
 #include <zephyr/sys/printk.h>
-
+#include <zephyr/sys/printk-hooks.h>
+#include <zephyr/sys/libc-hooks.h>
 
 extern int efi_console_putchar(int c);
 
@@ -39,14 +40,6 @@ static int console_out(int c)
 
 #endif
 
-#if defined(CONFIG_STDOUT_CONSOLE)
-extern void __stdout_hook_install(int (*hook)(int));
-#endif
-
-#if defined(CONFIG_PRINTK)
-extern void __printk_hook_install(int (*fn)(int));
-#endif
-
 /**
  * @brief Install printk/stdout hook for EFI console output
  */
@@ -66,10 +59,9 @@ static void efi_console_hook_install(void)
  *
  * @return 0 if successful, otherwise failed.
  */
-static int efi_console_init(const struct device *arg)
+static int efi_console_init(void)
 {
 
-	ARG_UNUSED(arg);
 
 	efi_console_hook_install();
 

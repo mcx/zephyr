@@ -33,6 +33,7 @@ static struct bt_gatt_discover_params discover_params;
 static struct bt_gatt_subscribe_params *oacp_sub_params;
 static struct bt_gatt_subscribe_params *olcp_sub_params;
 static unsigned char obj_data_buf[OBJ_MAX_SIZE];
+static uint32_t last_checksum;
 
 static bool first_selected;
 static void on_obj_selected(struct bt_ots_client *ots_inst, struct bt_conn *conn, int err);
@@ -44,7 +45,7 @@ static int on_obj_data_read(struct bt_ots_client *ots_inst, struct bt_conn *conn
 			    uint32_t len, uint8_t *data_p, bool is_complete);
 
 static void start_scan(void);
-static struct bt_uuid_16 uuid = BT_UUID_INIT_16(0);
+static struct bt_uuid_16 discover_uuid = BT_UUID_INIT_16(0);
 static struct bt_conn *default_conn;
 static atomic_t discovery_state;
 
@@ -76,23 +77,29 @@ static void print_hex_number(const uint8_t *num, size_t len)
 #define SW1_NODE DT_ALIAS(sw1)
 #define SW2_NODE DT_ALIAS(sw2)
 #define SW3_NODE DT_ALIAS(sw3)
-#if !DT_NODE_HAS_STATUS(SW0_NODE, okay) || !DT_NODE_HAS_STATUS(SW1_NODE, okay) ||                  \
-	!DT_NODE_HAS_STATUS(SW2_NODE, okay) || !DT_NODE_HAS_STATUS(SW3_NODE, okay)
+#if !DT_NODE_HAS_STATUS_OKAY(SW0_NODE) || !DT_NODE_HAS_STATUS_OKAY(SW1_NODE) ||                    \
+	!DT_NODE_HAS_STATUS_OKAY(SW2_NODE) || !DT_NODE_HAS_STATUS_OKAY(SW3_NODE)
 #error "Unsupported board: This sample need 4 buttons to run"
 #endif
 
-static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET_OR(SW0_NODE, gpios, {0});
+static const struct gpio_dt_spec button0 = GPIO_DT_SPEC_GET_OR(SW0_NODE, gpios, {0});
 static const struct gpio_dt_spec button1 = GPIO_DT_SPEC_GET_OR(SW1_NODE, gpios, {0});
 static const struct gpio_dt_spec button2 = GPIO_DT_SPEC_GET_OR(SW2_NODE, gpios, {0});
 static const struct gpio_dt_spec button3 = GPIO_DT_SPEC_GET_OR(SW3_NODE, gpios, {0});
 #define BTN_COUNT 4
 
-static const struct gpio_dt_spec btns[BTN_COUNT] = {button, button1, button2, button3};
+static const struct gpio_dt_spec btns[BTN_COUNT] = {button0, button1, button2, button3};
 static struct gpio_callback button_cb_data;
 struct otc_btn_work_info {
 	struct k_work_delayable work;
 	uint32_t pins;
 } otc_btn_work;
+
+struct otc_checksum_work_info {
+	struct k_work_delayable work;
+	off_t offset;
+	size_t len;
+} otc_checksum_work;
 
 static void otc_btn_work_fn(struct k_work *work)
 {
@@ -101,7 +108,7 @@ static void otc_btn_work_fn(struct k_work *work)
 	int err;
 	size_t size_to_write;
 
-	if (btn_work->pins == BIT(button.pin)) {
+	if (btn_work->pins == BIT(button0.pin)) {
 		if (!first_selected) {
 			err = bt_ots_client_select_id(&otc, default_conn, BT_OTS_OBJ_ID_MIN);
 			first_selected = true;
@@ -111,8 +118,7 @@ static void otc_btn_work_fn(struct k_work *work)
 		}
 
 		if (err != 0) {
-			printk("Failed to select object\n");
-			return;
+			printk("Failed to select object (err %d)\n", err);
 		}
 
 		printk("Selecting object succeeded\n");
@@ -121,8 +127,7 @@ static void otc_btn_work_fn(struct k_work *work)
 		err = bt_ots_client_read_object_metadata(&otc, default_conn,
 							 BT_OTS_METADATA_REQ_ALL);
 		if (err != 0) {
-			printk("Failed to read object metadata\n");
-			return;
+			printk("Failed to read object metadata (err %d)\n", err);
 		}
 
 	} else if (btn_work->pins == BIT(button2.pin)) {
@@ -134,12 +139,13 @@ static void otc_btn_work_fn(struct k_work *work)
 				obj_data_buf[idx] = UINT8_MAX - (idx % UINT8_MAX);
 			}
 
+			last_checksum = bt_ots_client_calc_checksum(obj_data_buf, size_to_write);
+			printk("Data sent checksum 0x%08x\n", last_checksum);
 			err = bt_ots_client_write_object_data(&otc, default_conn, obj_data_buf,
-							size_to_write, 0,
-							BT_OTS_OACP_WRITE_OP_MODE_NONE);
+							      size_to_write, 0,
+							      BT_OTS_OACP_WRITE_OP_MODE_NONE);
 			if (err != 0) {
-				printk("Failed to write object (%d)\n", err);
-				return;
+				printk("Failed to write object (err %d)\n", err);
 			}
 		} else {
 			printk("This OBJ does not support WRITE OP\n");
@@ -151,11 +157,24 @@ static void otc_btn_work_fn(struct k_work *work)
 			err = bt_ots_client_read_object_data(&otc, default_conn);
 			if (err != 0) {
 				printk("Failed to read object %d\n", err);
-				return;
 			}
 		} else {
 			printk("This OBJ does not support READ OP\n");
 		}
+	}
+}
+
+static void otc_checksum_work_fn(struct k_work *work)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+	struct otc_checksum_work_info *checksum_work =
+		CONTAINER_OF(dwork, struct otc_checksum_work_info, work);
+	int err;
+
+	err = bt_ots_client_get_object_checksum(&otc, default_conn, checksum_work->offset,
+						checksum_work->len);
+	if (err != 0) {
+		printk("bt_ots_client_get_object_checksum failed (%d)\n", err);
 	}
 }
 
@@ -169,7 +188,7 @@ static void configure_button_irq(const struct gpio_dt_spec btn)
 {
 	int ret;
 
-	if (!device_is_ready(btn.port)) {
+	if (!gpio_is_ready_dt(&btn)) {
 		printk("Error: button device %s is not ready\n", btn.port->name);
 		return;
 	}
@@ -218,7 +237,7 @@ static bool eir_found(struct bt_data *data, void *user_data)
 
 		for (i = 0; i < data->data_len; i += sizeof(uint16_t)) {
 			struct bt_le_conn_param *param;
-			struct bt_uuid *uuid;
+			const struct bt_uuid *uuid;
 			uint16_t u16;
 			int err;
 
@@ -294,8 +313,7 @@ static int subscribe_func(void)
 	oacp_sub_params = &otc.oacp_sub_params;
 	oacp_sub_params->disc_params = &otc.oacp_sub_disc_params;
 	if (oacp_sub_params) {
-		/* With ccc_handle == 0 it will use auto discovery */
-		oacp_sub_params->ccc_handle = 0;
+		oacp_sub_params->ccc_handle = BT_GATT_AUTO_DISCOVER_CCC_HANDLE;
 		oacp_sub_params->end_handle = otc.end_handle;
 		oacp_sub_params->value = BT_GATT_CCC_INDICATE;
 		oacp_sub_params->value_handle = otc.oacp_handle;
@@ -311,8 +329,7 @@ static int subscribe_func(void)
 	olcp_sub_params = &otc.olcp_sub_params;
 	olcp_sub_params->disc_params = &otc.olcp_sub_disc_params;
 	if (olcp_sub_params) {
-		/* With ccc_handle == 0 it will use auto discovery */
-		olcp_sub_params->ccc_handle = 0;
+		olcp_sub_params->ccc_handle = BT_GATT_AUTO_DISCOVER_CCC_HANDLE;
 		olcp_sub_params->end_handle = otc.end_handle;
 		olcp_sub_params->value = BT_GATT_CCC_INDICATE;
 		olcp_sub_params->value_handle = otc.olcp_handle;
@@ -352,8 +369,8 @@ static uint8_t discover_func(struct bt_conn *conn, const struct bt_gatt_attr *at
 	}
 
 	if (bt_uuid_cmp(discover_params.uuid, BT_UUID_OTS) == 0) {
-		(void)memcpy(&uuid, BT_UUID_OTS_FEATURE, sizeof(uuid));
-		discover_params.uuid = &uuid.uuid;
+		(void)memcpy(&discover_uuid, BT_UUID_OTS_FEATURE, sizeof(discover_uuid));
+		discover_params.uuid = &discover_uuid.uuid;
 		discover_params.start_handle = attr->handle + 1;
 		discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 		err = bt_gatt_discover(conn, &discover_params);
@@ -365,8 +382,8 @@ static uint8_t discover_func(struct bt_conn *conn, const struct bt_gatt_attr *at
 	} else if (bt_uuid_cmp(discover_params.uuid, BT_UUID_OTS_FEATURE) == 0) {
 		atomic_set_bit(&discovery_state, DISC_OTS_FEATURE);
 		otc.feature_handle = bt_gatt_attr_value_handle(attr);
-		(void)memcpy(&uuid, BT_UUID_OTS_NAME, sizeof(uuid));
-		discover_params.uuid = &uuid.uuid;
+		(void)memcpy(&discover_uuid, BT_UUID_OTS_NAME, sizeof(discover_uuid));
+		discover_params.uuid = &discover_uuid.uuid;
 		discover_params.start_handle = attr->handle + 1;
 		discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
@@ -378,8 +395,8 @@ static uint8_t discover_func(struct bt_conn *conn, const struct bt_gatt_attr *at
 	} else if (bt_uuid_cmp(discover_params.uuid, BT_UUID_OTS_NAME) == 0) {
 		atomic_set_bit(&discovery_state, DISC_OTS_NAME);
 		otc.obj_name_handle = bt_gatt_attr_value_handle(attr);
-		(void)memcpy(&uuid, BT_UUID_OTS_TYPE, sizeof(uuid));
-		discover_params.uuid = &uuid.uuid;
+		(void)memcpy(&discover_uuid, BT_UUID_OTS_TYPE, sizeof(discover_uuid));
+		discover_params.uuid = &discover_uuid.uuid;
 		discover_params.start_handle = attr->handle + 1;
 		discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
@@ -391,8 +408,8 @@ static uint8_t discover_func(struct bt_conn *conn, const struct bt_gatt_attr *at
 	} else if (bt_uuid_cmp(discover_params.uuid, BT_UUID_OTS_TYPE) == 0) {
 		atomic_set_bit(&discovery_state, DISC_OTS_TYPE);
 		otc.obj_type_handle = bt_gatt_attr_value_handle(attr);
-		(void)memcpy(&uuid, BT_UUID_OTS_SIZE, sizeof(uuid));
-		discover_params.uuid = &uuid.uuid;
+		(void)memcpy(&discover_uuid, BT_UUID_OTS_SIZE, sizeof(discover_uuid));
+		discover_params.uuid = &discover_uuid.uuid;
 		discover_params.start_handle = attr->handle + 1;
 		discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
@@ -404,8 +421,8 @@ static uint8_t discover_func(struct bt_conn *conn, const struct bt_gatt_attr *at
 	} else if (bt_uuid_cmp(discover_params.uuid, BT_UUID_OTS_SIZE) == 0) {
 		atomic_set_bit(&discovery_state, DISC_OTS_SIZE);
 		otc.obj_size_handle = bt_gatt_attr_value_handle(attr);
-		(void)memcpy(&uuid, BT_UUID_OTS_ID, sizeof(uuid));
-		discover_params.uuid = &uuid.uuid;
+		(void)memcpy(&discover_uuid, BT_UUID_OTS_ID, sizeof(discover_uuid));
+		discover_params.uuid = &discover_uuid.uuid;
 		discover_params.start_handle = attr->handle + 1;
 		discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
@@ -417,8 +434,8 @@ static uint8_t discover_func(struct bt_conn *conn, const struct bt_gatt_attr *at
 	} else if (bt_uuid_cmp(discover_params.uuid, BT_UUID_OTS_ID) == 0) {
 		atomic_set_bit(&discovery_state, DISC_OTS_ID);
 		otc.obj_id_handle = bt_gatt_attr_value_handle(attr);
-		(void)memcpy(&uuid, BT_UUID_OTS_PROPERTIES, sizeof(uuid));
-		discover_params.uuid = &uuid.uuid;
+		(void)memcpy(&discover_uuid, BT_UUID_OTS_PROPERTIES, sizeof(discover_uuid));
+		discover_params.uuid = &discover_uuid.uuid;
 		discover_params.start_handle = attr->handle + 1;
 		discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
@@ -430,8 +447,8 @@ static uint8_t discover_func(struct bt_conn *conn, const struct bt_gatt_attr *at
 	} else if (bt_uuid_cmp(discover_params.uuid, BT_UUID_OTS_PROPERTIES) == 0) {
 		atomic_set_bit(&discovery_state, DISC_OTS_PROPERTIES);
 		otc.obj_properties_handle = bt_gatt_attr_value_handle(attr);
-		(void)memcpy(&uuid, BT_UUID_OTS_ACTION_CP, sizeof(uuid));
-		discover_params.uuid = &uuid.uuid;
+		(void)memcpy(&discover_uuid, BT_UUID_OTS_ACTION_CP, sizeof(discover_uuid));
+		discover_params.uuid = &discover_uuid.uuid;
 		discover_params.start_handle = attr->handle + 1;
 		discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
@@ -442,8 +459,8 @@ static uint8_t discover_func(struct bt_conn *conn, const struct bt_gatt_attr *at
 	} else if (bt_uuid_cmp(discover_params.uuid, BT_UUID_OTS_ACTION_CP) == 0) {
 		atomic_set_bit(&discovery_state, DISC_OTS_ACTION_CP);
 		otc.oacp_handle = bt_gatt_attr_value_handle(attr);
-		(void)memcpy(&uuid, BT_UUID_OTS_LIST_CP, sizeof(uuid));
-		discover_params.uuid = &uuid.uuid;
+		(void)memcpy(&discover_uuid, BT_UUID_OTS_LIST_CP, sizeof(discover_uuid));
+		discover_params.uuid = &discover_uuid.uuid;
 		discover_params.start_handle = attr->handle + 1;
 		discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
@@ -483,7 +500,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 	first_selected = false;
 	if (err != 0) {
-		printk("Failed to connect to %s (%u)\n", addr, err);
+		printk("Failed to connect to %s %u %s\n", addr, err, bt_hci_err_to_str(err));
 
 		bt_conn_unref(default_conn);
 		default_conn = NULL;
@@ -498,8 +515,8 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	printk("Connected: %s\n", addr);
 
 	if (conn == default_conn) {
-		(void)memcpy(&uuid, BT_UUID_OTS, sizeof(uuid));
-		discover_params.uuid = &uuid.uuid;
+		(void)memcpy(&discover_uuid, BT_UUID_OTS, sizeof(discover_uuid));
+		discover_params.uuid = &discover_uuid.uuid;
 		discover_params.func = discover_func;
 		discover_params.start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE;
 		discover_params.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
@@ -523,7 +540,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	printk("Disconnected: %s (reason 0x%02x)\n", addr, reason);
+	printk("Disconnected: %s, reason 0x%02x %s\n", addr, reason, bt_hci_err_to_str(reason));
 
 	bt_conn_unref(default_conn);
 	default_conn = NULL;
@@ -538,7 +555,7 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 
 static void on_obj_selected(struct bt_ots_client *ots_inst, struct bt_conn *conn, int err)
 {
-	printk("Current object selected cb %d\n", err);
+	printk("Current object selected cb OLCP result (%d)\n", err);
 
 	if (err == BT_GATT_OTS_OLCP_RES_OPERATION_FAILED) {
 		printk("BT_GATT_OTS_OLCP_RES_OPERATION_FAILED %d\n", err);
@@ -568,6 +585,9 @@ static int on_obj_data_read(struct bt_ots_client *ots_inst, struct bt_conn *conn
 		printk("Object total received %d\n", len + offset);
 		print_hex_number(obj_data_buf, len + offset);
 		(void)memset(obj_data_buf, 0, OBJ_MAX_SIZE);
+		otc_checksum_work.offset = 0;
+		otc_checksum_work.len = otc.cur_object.size.cur;
+		k_work_schedule(&otc_checksum_work.work, K_NO_WAIT);
 		return BT_OTS_STOP;
 	}
 
@@ -589,7 +609,22 @@ static void on_obj_metadata_read(struct bt_ots_client *ots_inst, struct bt_conn 
 }
 static void on_obj_data_written(struct bt_ots_client *ots_inst, struct bt_conn *conn, size_t len)
 {
+	int err;
+
 	printk("Object been written %d\n", len);
+	/* Update object size after write done*/
+	err = bt_ots_client_read_object_metadata(&otc, default_conn,
+						 BT_OTS_METADATA_REQ_ALL);
+	if (err != 0) {
+		printk("Failed to read object metadata (err %d)\n", err);
+	}
+}
+
+void on_obj_checksum_calculated(struct bt_ots_client *ots_inst,
+				struct bt_conn *conn, int err, uint32_t checksum)
+{
+	printk("Object Calculate checksum OACP result (%d)\nChecksum 0x%08x last sent 0x%08x %s\n",
+	       err, checksum, last_checksum, (checksum == last_checksum) ? "match" : "not match");
 }
 
 static void bt_otc_init(void)
@@ -598,6 +633,7 @@ static void bt_otc_init(void)
 	otc_cb.obj_selected = on_obj_selected;
 	otc_cb.obj_metadata_read = on_obj_metadata_read;
 	otc_cb.obj_data_written = on_obj_data_written;
+	otc_cb.obj_checksum_calculated = on_obj_checksum_calculated;
 	otc.start_handle = BT_ATT_FIRST_ATTRIBUTE_HANDLE;
 	otc.end_handle = BT_ATT_LAST_ATTRIBUTE_HANDLE;
 	printk("Current object selected callback: %p\n", otc_cb.obj_selected);
@@ -607,24 +643,26 @@ static void bt_otc_init(void)
 	bt_ots_client_register(&otc);
 }
 
-void main(void)
+int main(void)
 {
 	int err;
 
 	first_selected = false;
 	discovery_state = ATOMIC_INIT(0);
 	k_work_init_delayable(&otc_btn_work.work, otc_btn_work_fn);
+	k_work_init_delayable(&otc_checksum_work.work, otc_checksum_work_fn);
 
 	configure_buttons();
 	err = bt_enable(NULL);
 
 	if (err != 0) {
 		printk("Bluetooth init failed (err %d)\n", err);
-		return;
+		return 0;
 	}
 
 	bt_otc_init();
 	printk("Bluetooth OTS client sample running\n");
 
 	start_scan();
+	return 0;
 }

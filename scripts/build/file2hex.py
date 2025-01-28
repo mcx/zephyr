@@ -23,9 +23,14 @@ def parse_args():
 
     parser = argparse.ArgumentParser(
         description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
 
     parser.add_argument("-f", "--file", required=True, help="Input file")
+    parser.add_argument("-o", "--offset", type=lambda x: int(x, 0), default=0,
+                        help="Byte offset in the input file")
+    parser.add_argument("-l", "--length", type=lambda x: int(x, 0), default=-1,
+                        help="""Length in bytes to read from the input file.
+                        Defaults to reading till the end of the input file.""")
     parser.add_argument("-g", "--gzip", action="store_true",
                         help="Compress the file using gzip before output")
     parser.add_argument("-t", "--gzip-mtime", type=int, default=0,
@@ -38,7 +43,11 @@ def parse_args():
 
 
 def get_nice_string(list_or_iterator):
-    return ", ".join("0x" + str(x) for x in list_or_iterator)
+    # Convert into comma separated list form.
+    s = ", ".join("0x" + str(x) for x in list_or_iterator)
+
+    # Format the list to eight values per line.
+    return "\n".join(s[i:i+47] for i in range(0, len(s), 48))
 
 
 def make_hex(chunk):
@@ -53,18 +62,26 @@ def main():
     if args.gzip:
         with io.BytesIO() as content:
             with open(args.file, 'rb') as fg:
+                fg.seek(args.offset)
                 with gzip.GzipFile(fileobj=content, mode='w',
                                    mtime=args.gzip_mtime,
                                    compresslevel=9) as gz_obj:
-                    gz_obj.write(fg.read())
+                    gz_obj.write(fg.read(args.length))
 
             content.seek(0)
             for chunk in iter(lambda: content.read(8), b''):
                 make_hex(chunk)
     else:
         with open(args.file, "rb") as fp:
-            for chunk in iter(lambda: fp.read(8), b''):
-                make_hex(chunk)
+            fp.seek(args.offset)
+            if args.length < 0:
+                for chunk in iter(lambda: fp.read(1024), b''):
+                    make_hex(chunk)
+            else:
+                remainder = args.length
+                for chunk in iter(lambda: fp.read(min(1024, remainder)), b''):
+                    make_hex(chunk)
+                    remainder = remainder - len(chunk)
 
 
 if __name__ == "__main__":

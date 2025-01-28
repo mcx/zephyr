@@ -17,7 +17,7 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 /* An example data validation callback. */
 static int timer_on_off_validate_cb(uint16_t obj_inst_id, uint16_t res_id, uint16_t res_inst_id,
 				    uint8_t *data, uint16_t data_len, bool last_block,
-				    size_t total_size)
+				    size_t total_size, size_t offset)
 {
 	LOG_INF("Validating On/Off data");
 
@@ -34,7 +34,7 @@ static int timer_on_off_validate_cb(uint16_t obj_inst_id, uint16_t res_id, uint1
 
 static int timer_digital_state_cb(uint16_t obj_inst_id, uint16_t res_id, uint16_t res_inst_id,
 				  uint8_t *data, uint16_t data_len, bool last_block,
-				  size_t total_size)
+				  size_t total_size, size_t offset)
 {
 	bool *digital_state = (bool *)data;
 
@@ -49,9 +49,9 @@ static int timer_digital_state_cb(uint16_t obj_inst_id, uint16_t res_id, uint16_
 
 void init_timer_object(void)
 {
-	lwm2m_engine_create_obj_inst("3340/0");
-	lwm2m_engine_register_validate_callback("3340/0/5850", timer_on_off_validate_cb);
-	lwm2m_engine_register_post_write_callback("3340/0/5543", timer_digital_state_cb);
-	lwm2m_engine_set_res_buf("3340/0/5750", TIMER_NAME, sizeof(TIMER_NAME), sizeof(TIMER_NAME),
-				 LWM2M_RES_DATA_FLAG_RO);
+	lwm2m_create_object_inst(&LWM2M_OBJ(3340, 0));
+	lwm2m_register_validate_callback(&LWM2M_OBJ(3340, 0, 5850), timer_on_off_validate_cb);
+	lwm2m_register_post_write_callback(&LWM2M_OBJ(3340, 0, 5543), timer_digital_state_cb);
+	lwm2m_set_res_buf(&LWM2M_OBJ(3340, 0, 5750), TIMER_NAME, sizeof(TIMER_NAME),
+			  sizeof(TIMER_NAME), LWM2M_RES_DATA_FLAG_RO);
 }

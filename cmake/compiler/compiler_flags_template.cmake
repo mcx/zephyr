@@ -13,6 +13,8 @@ set_compiler_property(PROPERTY optimization_speed)
 
 set_compiler_property(PROPERTY optimization_size)
 
+set_compiler_property(PROPERTY optimization_size_aggressive)
+
 #######################################################
 # This section covers flags related to warning levels #
 #######################################################
@@ -51,7 +53,7 @@ set_compiler_property(PROPERTY nostdinc)
 set_compiler_property(PROPERTY nostdinc_include)
 
 # Compiler flags for disabling C++ standard include.
-set_compiler_property(TARGET compiler-cpp PROPERTY nostdincxx)
+set_property(TARGET compiler-cpp PROPERTY nostdincxx)
 
 # Required C++ flags when compiling C++ code
 set_property(TARGET compiler-cpp PROPERTY required)
@@ -67,6 +69,10 @@ set_property(TARGET compiler-cpp PROPERTY dialect_cpp2b)
 
 # Flag for disabling strict aliasing rule in C and C++
 set_compiler_property(PROPERTY no_strict_aliasing)
+
+# Extra warnings options for twister run
+set_property(TARGET compiler PROPERTY warnings_as_errors)
+set_property(TARGET asm PROPERTY warnings_as_errors)
 
 # Flag for disabling exceptions in C++
 set_property(TARGET compiler-cpp PROPERTY no_exceptions)
@@ -86,6 +92,9 @@ set_compiler_property(PROPERTY coverage)
 
 # Security canaries flags.
 set_compiler_property(PROPERTY security_canaries)
+set_compiler_property(PROPERTY security_canaries_strong)
+set_compiler_property(PROPERTY security_canaries_all)
+set_compiler_property(PROPERTY security_canaries_explicit)
 
 set_compiler_property(PROPERTY security_fortify_compile_time)
 set_compiler_property(PROPERTY security_fortify_run_time)
@@ -98,6 +107,12 @@ set_compiler_property(PROPERTY freestanding)
 
 # Flag to include debugging symbol in compilation
 set_compiler_property(PROPERTY debug)
+
+# Flags to save temporary object files
+set_compiler_property(PROPERTY save_temps)
+
+# Flag to specify linker script
+set_compiler_property(PROPERTY linker_script)
 
 set_compiler_property(PROPERTY no_common)
 
@@ -115,3 +130,22 @@ set_compiler_property(PROPERTY warning_no_pointer_arithmetic)
 
 # Compiler flags for disabling position independent code / executable
 set_compiler_property(PROPERTY no_position_independent)
+
+# Compiler flag to avoid combine more than one global variable into a single aggregate.
+# gen_kobject_list.py is does not understand it and end up identifying objects as if
+# they had the same address.
+set_compiler_property(PROPERTY no_global_merge)
+
+# Compiler flag for warning about shadow variables
+set_compiler_property(PROPERTY warning_shadow_variables)
+
+# Compiler flags to avoid recognizing built-in functions
+set_compiler_property(PROPERTY no_builtin)
+set_compiler_property(PROPERTY no_builtin_malloc)
+
+# Compiler flag for defining specs. Used only by gcc, other compilers may keep
+# this undefined.
+set_compiler_property(PROPERTY specs)
+
+# Compiler flag for defining preinclude files.
+set_compiler_property(PROPERTY include_file)

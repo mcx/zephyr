@@ -18,7 +18,8 @@ def parse_args():
     """Parse command line arguments and options"""
     parser = argparse.ArgumentParser(
         description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False)
 
     parser.add_argument('-d', '--directory', required=True,
                         help='Directory to walk for sub-directory discovery')
@@ -29,7 +30,7 @@ def parse_args():
                         help='File to write containing a list of all \
                               directories found')
     parser.add_argument('-t', '--trigger-file', required=False,
-                        help='Trigger file to be be touched to re-run CMake')
+                        help='Trigger file to be touched to re-run CMake')
 
     args = parser.parse_args()
 

@@ -194,7 +194,11 @@ static int inject_error_trigger(const struct device *dev)
 static int ecc_error_log_get(const struct device *dev, uint64_t *value)
 {
 	*value = ibecc_read_reg64(dev, IBECC_ECC_ERROR_LOG);
-	if (*value == 0) {
+	/**
+	 * The ECC Error log register is only valid when ECC_ERROR_CERRSTS
+	 * or ECC_ERROR_MERRSTS error status bits are set
+	 */
+	if ((*value & (ECC_ERROR_MERRSTS | ECC_ERROR_CERRSTS)) == 0) {
 		return -ENODATA;
 	}
 
@@ -253,7 +257,7 @@ static int notify_callback_set(const struct device *dev,
 	return 0;
 }
 
-static const struct edac_driver_api api = {
+static DEVICE_API(edac, api) = {
 #if defined(CONFIG_EDAC_ERROR_INJECT)
 	/* Error Injection functions */
 	.inject_set_param1 = inject_set_param1,
@@ -383,7 +387,7 @@ static bool handle_nmi(void)
 	return true;
 }
 
-bool z_x86_do_kernel_nmi(const z_arch_esf_t *esf)
+bool z_x86_do_kernel_nmi(const struct arch_esf *esf)
 {
 	const struct device *const dev = DEVICE_DT_GET(DEVICE_NODE);
 	struct ibecc_data *data = dev->data;

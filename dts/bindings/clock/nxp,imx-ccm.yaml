@@ -8,11 +8,8 @@ compatible: "nxp,imx-ccm"
 include: [clock-controller.yaml, base.yaml]
 
 properties:
-    reg:
-      required: true
-
-    "#clock-cells":
-      const: 3
+  "#clock-cells":
+    const: 3
 
 clock-cells:
   - name

@@ -10,16 +10,17 @@
 
 #include <errno.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/spi/rtio.h>
 #include <zephyr/drivers/clock_control.h>
 #include <fsl_lpspi.h>
-#ifdef CONFIG_PINCTRL
 #include <zephyr/drivers/pinctrl.h>
-#endif
 
 #define LOG_LEVEL CONFIG_SPI_LOG_LEVEL
 #include <zephyr/logging/log.h>
 #include <zephyr/irq.h>
 LOG_MODULE_REGISTER(spi_rv32m1_lpspi);
+
+#include <soc.h>
 
 #include "spi_context.h"
 
@@ -33,9 +34,7 @@ struct spi_mcux_config {
 	clock_ip_name_t clock_ip_name;
 	uint32_t clock_ip_src;
 	void (*irq_config_func)(const struct device *dev);
-#ifdef CONFIG_PINCTRL
 	const struct pinctrl_dev_config *pincfg;
-#endif
 };
 
 struct spi_mcux_data {
@@ -288,36 +287,29 @@ static int spi_mcux_init(const struct device *dev)
 		return err;
 	}
 
-#ifdef CONFIG_PINCTRL
 	err = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
 	if (err != 0) {
 		return err;
 	}
-#endif
 
 	spi_context_unlock_unconditionally(&data->ctx);
 
 	return 0;
 }
 
-static const struct spi_driver_api spi_mcux_driver_api = {
+static DEVICE_API(spi, spi_mcux_driver_api) = {
 	.transceive = spi_mcux_transceive,
 #ifdef CONFIG_SPI_ASYNC
 	.transceive_async = spi_mcux_transceive_async,
 #endif
+#ifdef CONFIG_SPI_RTIO
+	.iodev_submit = spi_rtio_iodev_default_submit,
+#endif
 	.release = spi_mcux_release,
 };
 
-#ifdef CONFIG_PINCTRL
-#define PINCTRL_INIT(n) .pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),
-#define PINCTRL_DEFINE(n) PINCTRL_DT_INST_DEFINE(n);
-#else
-#define PINCTRL_DEFINE(n)
-#define PINCTRL_INIT(n)
-#endif
-
 #define SPI_RV32M1_INIT(n)						\
-	PINCTRL_DEFINE(n)						\
+	PINCTRL_DT_INST_DEFINE(n);					\
 									\
 	static void spi_mcux_config_func_##n(const struct device *dev);	\
 									\
@@ -329,7 +321,7 @@ static const struct spi_driver_api spi_mcux_driver_api = {
 		.irq_config_func = spi_mcux_config_func_##n,		\
 		.clock_ip_name = INST_DT_CLOCK_IP_NAME(n),		\
 		.clock_ip_src  = kCLOCK_IpSrcFircAsync,			\
-		PINCTRL_INIT(n)						\
+		.pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),		\
 	};								\
 									\
 	static struct spi_mcux_data spi_mcux_data_##n = {		\
@@ -338,7 +330,7 @@ static const struct spi_driver_api spi_mcux_driver_api = {
 		SPI_CONTEXT_CS_GPIOS_INITIALIZE(DT_DRV_INST(n), ctx)	\
 	};								\
 									\
-	DEVICE_DT_INST_DEFINE(n, &spi_mcux_init, NULL,			\
+	SPI_DEVICE_DT_INST_DEFINE(n, spi_mcux_init, NULL,		\
 			    &spi_mcux_data_##n,				\
 			    &spi_mcux_config_##n,			\
 			    POST_KERNEL,				\

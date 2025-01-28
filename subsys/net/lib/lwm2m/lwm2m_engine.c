@@ -32,10 +32,12 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 #include <zephyr/net/socket.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/types.h>
+#include <zephyr/posix/fcntl.h>
+#include <zephyr/zvfs/eventfd.h>
 
-#include <fcntl.h>
 #if defined(CONFIG_LWM2M_DTLS_SUPPORT)
 #include <zephyr/net/tls_credentials.h>
+#include <mbedtls/ssl_ciphersuites.h>
 #endif
 #if defined(CONFIG_DNS_RESOLVER)
 #include <zephyr/net/dns_resolve.h>
@@ -47,6 +49,7 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 #include "lwm2m_rw_oma_tlv.h"
 #include "lwm2m_rw_plain_text.h"
 #include "lwm2m_util.h"
+#include "lwm2m_rd_client.h"
 #if defined(CONFIG_LWM2M_RW_SENML_JSON_SUPPORT)
 #include "lwm2m_rw_senml_json.h"
 #endif
@@ -59,18 +62,15 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 #ifdef CONFIG_LWM2M_RW_SENML_CBOR_SUPPORT
 #include "lwm2m_rw_senml_cbor.h"
 #endif
-#ifdef CONFIG_LWM2M_RD_CLIENT_SUPPORT
-#include "lwm2m_rd_client.h"
-#endif
 
-#if IS_ENABLED(CONFIG_NET_TC_THREAD_COOPERATIVE)
+#if defined(CONFIG_NET_TC_THREAD_COOPERATIVE)
 /* Lowest priority cooperative thread */
 #define THREAD_PRIORITY K_PRIO_COOP(CONFIG_NUM_COOP_PRIORITIES - 1)
 #else
 #define THREAD_PRIORITY K_PRIO_PREEMPT(CONFIG_NUM_PREEMPT_PRIORITIES - 1)
 #endif
 
-#define ENGINE_UPDATE_INTERVAL_MS 500
+#define ENGINE_SLEEP_MS 500
 
 #ifdef CONFIG_LWM2M_VERSION_1_1
 #define LWM2M_ENGINE_MAX_OBSERVER_PATH CONFIG_LWM2M_ENGINE_MAX_OBSERVER * 3
@@ -87,8 +87,8 @@ static bool active_engine_thread;
 struct service_node {
 	sys_snode_t node;
 	k_work_handler_t service_work;
-	uint32_t min_call_period; /* ms */
-	uint64_t last_timestamp;  /* ms */
+	uint32_t call_period; /* ms */
+	int64_t next_timestamp;  /* ms */
 };
 
 static struct service_node service_node_data[MAX_PERIODIC_SERVICE];
@@ -97,7 +97,9 @@ static sys_slist_t engine_service_list;
 static K_KERNEL_STACK_DEFINE(engine_thread_stack, CONFIG_LWM2M_ENGINE_STACK_SIZE);
 static struct k_thread engine_thread_data;
 
-#define MAX_POLL_FD CONFIG_NET_SOCKETS_POLL_MAX
+static K_MUTEX_DEFINE(engine_lock);
+
+#define MAX_POLL_FD CONFIG_ZVFS_POLL_MAX
 
 /* Resources */
 static struct zsock_pollfd sock_fds[MAX_POLL_FD];
@@ -105,67 +107,30 @@ static struct zsock_pollfd sock_fds[MAX_POLL_FD];
 static struct lwm2m_ctx *sock_ctx[MAX_POLL_FD];
 static int sock_nfds;
 
-static struct lwm2m_block_context block1_contexts[NUM_BLOCK1_CONTEXT];
+/* Resource wrappers */
+#if defined(CONFIG_LWM2M_COAP_BLOCK_TRANSFER)
+static struct coap_block_context output_block_contexts[NUM_OUTPUT_BLOCK_CONTEXT];
+#endif
+
 /* Resource wrappers */
 struct lwm2m_ctx **lwm2m_sock_ctx(void) { return sock_ctx; }
 
 int lwm2m_sock_nfds(void) { return sock_nfds; }
 
-struct lwm2m_block_context *lwm2m_block1_context(void) { return block1_contexts; }
+#if defined(CONFIG_LWM2M_COAP_BLOCK_TRANSFER)
+struct coap_block_context *lwm2m_output_block_context(void) { return output_block_contexts; }
+#endif
 
 static int lwm2m_socket_update(struct lwm2m_ctx *ctx);
 
-/* for debugging: to print IP addresses */
-char *lwm2m_sprint_ip_addr(const struct sockaddr *addr)
-{
-	static char buf[NET_IPV6_ADDR_LEN];
-
-	if (addr->sa_family == AF_INET6) {
-		return net_addr_ntop(AF_INET6, &net_sin6(addr)->sin6_addr, buf, sizeof(buf));
-	}
-
-	if (addr->sa_family == AF_INET) {
-		return net_addr_ntop(AF_INET, &net_sin(addr)->sin_addr, buf, sizeof(buf));
-	}
-
-	LOG_ERR("Unknown IP address family:%d", addr->sa_family);
-	strcpy(buf, "unk");
-	return buf;
-}
-
-static uint8_t to_hex_digit(uint8_t digit)
-{
-	if (digit >= 10U) {
-		return digit - 10U + 'a';
-	}
-
-	return digit + '0';
-}
-
-char *sprint_token(const uint8_t *token, uint8_t tkl)
-{
-	static char buf[32];
-	char *ptr = buf;
-
-	if (token && tkl != 0) {
-		int i;
-
-		tkl = MIN(tkl, sizeof(buf) / 2 - 1);
-
-		for (i = 0; i < tkl; i++) {
-			*ptr++ = to_hex_digit(token[i] >> 4);
-			*ptr++ = to_hex_digit(token[i] & 0x0F);
-		}
-
-		*ptr = '\0';
-	} else {
-		strcpy(buf, "[no-token]");
-	}
-
-	return buf;
-}
-
 /* utility functions */
+
+void lwm2m_engine_wake_up(void)
+{
+	if (IS_ENABLED(CONFIG_LWM2M_TICKLESS)) {
+		zvfs_eventfd_write(sock_fds[MAX_POLL_FD - 1].fd, 1);
+	}
+}
 
 int lwm2m_open_socket(struct lwm2m_ctx *client_ctx)
 {
@@ -196,28 +161,26 @@ int lwm2m_open_socket(struct lwm2m_ctx *client_ctx)
 
 int lwm2m_close_socket(struct lwm2m_ctx *client_ctx)
 {
-	int ret = 0;
-
 	if (client_ctx->sock_fd >= 0) {
-		ret = zsock_close(client_ctx->sock_fd);
+		int ret = zsock_close(client_ctx->sock_fd);
+
 		if (ret) {
 			LOG_ERR("Failed to close socket: %d", errno);
 			ret = -errno;
 			return ret;
 		}
-
-		client_ctx->sock_fd = -1;
-		client_ctx->connection_suspended = true;
-#if defined(CONFIG_LWM2M_QUEUE_MODE_ENABLED)
-		/* Enable Queue mode buffer store */
-		client_ctx->buffer_client_messages = true;
-#endif
-		lwm2m_socket_update(client_ctx);
 	}
 
-	return ret;
-}
+	client_ctx->sock_fd = -1;
+	client_ctx->connection_suspended = true;
+#if defined(CONFIG_LWM2M_QUEUE_MODE_ENABLED)
+	/* Enable Queue mode buffer store */
+	client_ctx->buffer_client_messages = true;
+#endif
+	lwm2m_socket_update(client_ctx);
 
+	return 0;
+}
 
 int lwm2m_socket_suspend(struct lwm2m_ctx *client_ctx)
 {
@@ -226,14 +189,17 @@ int lwm2m_socket_suspend(struct lwm2m_ctx *client_ctx)
 	if (client_ctx->sock_fd >= 0 && !client_ctx->connection_suspended) {
 		int socket_temp_id = client_ctx->sock_fd;
 
+		/* Prevent closing */
 		client_ctx->sock_fd = -1;
-		client_ctx->connection_suspended = true;
-#if defined(CONFIG_LWM2M_QUEUE_MODE_ENABLED)
-		/* Enable Queue mode buffer store */
-		client_ctx->buffer_client_messages = true;
-#endif
-		lwm2m_socket_update(client_ctx);
+		/* Just mark as suspended */
+		lwm2m_close_socket(client_ctx);
+		/* store back the socket handle */
 		client_ctx->sock_fd = socket_temp_id;
+
+		if (client_ctx->set_socket_state) {
+			client_ctx->set_socket_state(client_ctx->sock_fd,
+						     LWM2M_SOCKET_STATE_NO_DATA);
+		}
 	}
 
 	return ret;
@@ -244,15 +210,21 @@ int lwm2m_engine_connection_resume(struct lwm2m_ctx *client_ctx)
 	int ret;
 
 	if (client_ctx->connection_suspended) {
-		lwm2m_close_socket(client_ctx);
-		client_ctx->connection_suspended = false;
-		ret = lwm2m_open_socket(client_ctx);
-		if (ret) {
-			return ret;
+		if (IS_ENABLED(CONFIG_LWM2M_RD_CLIENT_STOP_POLLING_AT_IDLE) ||
+		    IS_ENABLED(CONFIG_LWM2M_RD_CLIENT_LISTEN_AT_IDLE)) {
+			LOG_DBG("Resume suspended connection");
+			lwm2m_socket_update(client_ctx);
+			client_ctx->connection_suspended = false;
+		} else {
+			LOG_DBG("Close and resume a new connection");
+			lwm2m_close_socket(client_ctx);
+			ret = lwm2m_open_socket(client_ctx);
+			if (ret) {
+				return ret;
+			}
+			client_ctx->connection_suspended = false;
+			return lwm2m_socket_start(client_ctx);
 		}
-
-		LOG_DBG("Resume suspended connection");
-		return lwm2m_socket_start(client_ctx);
 	}
 
 	return 0;
@@ -262,6 +234,7 @@ int lwm2m_push_queued_buffers(struct lwm2m_ctx *client_ctx)
 {
 #if defined(CONFIG_LWM2M_QUEUE_MODE_ENABLED)
 	client_ctx->buffer_client_messages = false;
+	lwm2m_client_lock(client_ctx);
 	while (!sys_slist_is_empty(&client_ctx->queued_messages)) {
 		sys_snode_t *msg_node = sys_slist_get(&client_ctx->queued_messages);
 		struct lwm2m_message *msg;
@@ -270,8 +243,10 @@ int lwm2m_push_queued_buffers(struct lwm2m_ctx *client_ctx)
 			break;
 		}
 		msg = SYS_SLIST_CONTAINER(msg_node, msg, node);
+		msg->pending->t0 = k_uptime_get();
 		sys_slist_append(&msg->ctx->pending_sends, &msg->node);
 	}
+	lwm2m_client_unlock(client_ctx);
 #endif
 	return 0;
 }
@@ -319,14 +294,12 @@ int lwm2m_engine_validate_write_access(struct lwm2m_message *msg,
 #if defined(CONFIG_LWM2M_RD_CLIENT_SUPPORT_BOOTSTRAP)
 static bool bootstrap_delete_allowed(int obj_id, int obj_inst_id)
 {
-	char pathstr[MAX_RESOURCE_LEN];
 	bool bootstrap_server;
 	int ret;
 
 	if (obj_id == LWM2M_OBJECT_SECURITY_ID) {
-		snprintk(pathstr, sizeof(pathstr), "%d/%d/1", LWM2M_OBJECT_SECURITY_ID,
-			 obj_inst_id);
-		ret = lwm2m_engine_get_bool(pathstr, &bootstrap_server);
+		ret = lwm2m_get_bool(&LWM2M_OBJ(LWM2M_OBJECT_SECURITY_ID, obj_inst_id, 1),
+					    &bootstrap_server);
 		if (ret < 0) {
 			return false;
 		}
@@ -385,23 +358,26 @@ int bootstrap_delete(struct lwm2m_message *msg)
 	return ret;
 }
 #endif
-/* returns ms until the next retransmission is due, or INT32_MAX
+
+/* returns timestamp when next retransmission is due, or INT64_MAX
  * if no retransmissions are necessary
  */
-static int32_t retransmit_request(struct lwm2m_ctx *client_ctx, const uint32_t timestamp)
+static int64_t retransmit_request(struct lwm2m_ctx *client_ctx, const int64_t timestamp)
 {
 	struct lwm2m_message *msg;
 	struct coap_pending *p;
-	int32_t remaining, next_retransmission = INT32_MAX;
+	int64_t remaining, next = INT64_MAX;
 	int i;
+
+	lwm2m_client_lock(client_ctx);
 
 	for (i = 0, p = client_ctx->pendings; i < ARRAY_SIZE(client_ctx->pendings); i++, p++) {
 		if (!p->timeout) {
 			continue;
 		}
 
-		remaining = p->t0 + p->timeout - timestamp;
-		if (remaining < 0) {
+		remaining = p->t0 + p->timeout;
+		if (remaining < timestamp) {
 			msg = find_msg(p, NULL);
 			if (!msg) {
 				LOG_ERR("pending has no valid LwM2M message!");
@@ -427,40 +403,41 @@ static int32_t retransmit_request(struct lwm2m_ctx *client_ctx, const uint32_t t
 			lwm2m_send_message_async(msg);
 			break;
 		}
-		if (remaining < next_retransmission) {
-			next_retransmission = remaining;
+		if (remaining < next) {
+			next = remaining;
 		}
 	}
 
-	return next_retransmission;
+	lwm2m_client_unlock(client_ctx);
+
+	return next;
 }
-static int32_t engine_next_service_timeout_ms(uint32_t max_timeout, const int64_t timestamp)
+static int64_t engine_next_service_timestamp(void)
 {
 	struct service_node *srv;
-	uint64_t time_left_ms;
-	uint32_t timeout = max_timeout;
+	int64_t next = INT64_MAX;
 
 	SYS_SLIST_FOR_EACH_CONTAINER(&engine_service_list, srv, node) {
-		time_left_ms = srv->last_timestamp + srv->min_call_period;
-
-		/* service is due */
-		if (time_left_ms < timestamp) {
-			return 0;
-		}
-
-		/* service timeout is less than the current timeout */
-		time_left_ms -= timestamp;
-		if (time_left_ms < timeout) {
-			timeout = time_left_ms;
+		if (srv->next_timestamp < next) {
+			next = srv->next_timestamp;
 		}
 	}
 
-	return timeout;
+	return next;
 }
 
-int lwm2m_engine_add_service(k_work_handler_t service, uint32_t period_ms)
+static int engine_add_srv(k_work_handler_t service, uint32_t period_ms, int64_t next)
 {
 	int i;
+
+	if (!service) {
+		return -EINVAL;
+	}
+
+	/* First, try if the service is already registered, and modify it*/
+	if (lwm2m_engine_update_service_period(service, period_ms) == 0) {
+		return 0;
+	}
 
 	/* find an unused service index node */
 	for (i = 0; i < MAX_PERIODIC_SERVICE; i++) {
@@ -474,12 +451,29 @@ int lwm2m_engine_add_service(k_work_handler_t service, uint32_t period_ms)
 	}
 
 	service_node_data[i].service_work = service;
-	service_node_data[i].min_call_period = period_ms;
-	service_node_data[i].last_timestamp = 0U;
+	service_node_data[i].call_period = period_ms;
+	service_node_data[i].next_timestamp = next;
 
 	sys_slist_append(&engine_service_list, &service_node_data[i].node);
 
+	lwm2m_engine_wake_up();
+
 	return 0;
+}
+
+int lwm2m_engine_add_service(k_work_handler_t service, uint32_t period_ms)
+{
+	return engine_add_srv(service, period_ms, k_uptime_get() + period_ms);
+}
+
+int lwm2m_engine_call_at(k_work_handler_t service, int64_t timestamp)
+{
+	return engine_add_srv(service, 0, timestamp);
+}
+
+int lwm2m_engine_call_now(k_work_handler_t service)
+{
+	return engine_add_srv(service, 0, k_uptime_get());
 }
 
 int lwm2m_engine_update_service_period(k_work_handler_t service, uint32_t period_ms)
@@ -488,44 +482,74 @@ int lwm2m_engine_update_service_period(k_work_handler_t service, uint32_t period
 
 	for (i = 0; i < MAX_PERIODIC_SERVICE; i++) {
 		if (service_node_data[i].service_work == service) {
-			service_node_data[i].min_call_period = period_ms;
-			return 0;
+			if (period_ms) {
+				service_node_data[i].call_period = period_ms;
+				service_node_data[i].next_timestamp = k_uptime_get() + period_ms;
+				lwm2m_engine_wake_up();
+				return 0;
+			}
+			sys_slist_find_and_remove(&engine_service_list, &service_node_data[i].node);
+			service_node_data[i].service_work = NULL;
+			return 1;
 		}
 	}
 
 	return -ENOENT;
 }
 
-static int32_t lwm2m_engine_service(const int64_t timestamp)
+static int64_t lwm2m_engine_service(const int64_t timestamp)
 {
-	struct service_node *srv;
-	int64_t service_due_timestamp;
+	struct service_node *srv, *tmp;
+	bool restart;
 
-	SYS_SLIST_FOR_EACH_CONTAINER(&engine_service_list, srv, node) {
-		service_due_timestamp = srv->last_timestamp + srv->min_call_period;
-		/* service is due */
-		if (timestamp >= service_due_timestamp) {
-			srv->last_timestamp = k_uptime_get();
-			srv->service_work(NULL);
+	do {
+		restart = false;
+		SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&engine_service_list, srv, tmp, node) {
+			/* service is due */
+			if (timestamp >= srv->next_timestamp) {
+				k_work_handler_t work = srv->service_work;
+
+				if (srv->call_period) {
+					srv->next_timestamp = k_uptime_get() + srv->call_period;
+				} else {
+					sys_slist_find_and_remove(&engine_service_list, &srv->node);
+					srv->service_work = NULL;
+				}
+				if (work) {
+					work(NULL);
+				}
+				/* List might have been modified by the callback */
+				restart = true;
+				break;
+			}
 		}
-	}
+	} while (restart);
 
 	/* calculate how long to sleep till the next service */
-	return engine_next_service_timeout_ms(ENGINE_UPDATE_INTERVAL_MS, timestamp);
+	return engine_next_service_timestamp();
 }
 
 /* LwM2M Socket Integration */
 
 int lwm2m_socket_add(struct lwm2m_ctx *ctx)
 {
-	if (sock_nfds >= MAX_POLL_FD) {
-		return -ENOMEM;
+	if (IS_ENABLED(CONFIG_LWM2M_TICKLESS)) {
+		/* Last poll-handle is reserved for control socket */
+		if (sock_nfds >= (MAX_POLL_FD - 1)) {
+			return -ENOMEM;
+		}
+	} else {
+		if (sock_nfds >= MAX_POLL_FD) {
+			return -ENOMEM;
+		}
 	}
 
 	sock_ctx[sock_nfds] = ctx;
 	sock_fds[sock_nfds].fd = ctx->sock_fd;
 	sock_fds[sock_nfds].events = ZSOCK_POLLIN;
 	sock_nfds++;
+
+	lwm2m_engine_wake_up();
 
 	return 0;
 }
@@ -537,6 +561,7 @@ static int lwm2m_socket_update(struct lwm2m_ctx *ctx)
 			continue;
 		}
 		sock_fds[i].fd = ctx->sock_fd;
+		lwm2m_engine_wake_up();
 		return 0;
 	}
 	return -1;
@@ -563,20 +588,31 @@ void lwm2m_socket_del(struct lwm2m_ctx *ctx)
 		sock_fds[sock_nfds].fd = -1;
 		break;
 	}
+	lwm2m_engine_wake_up();
 }
 
-static void check_notifications(struct lwm2m_ctx *ctx, const int64_t timestamp)
+/* Generate notify messages. Return timestamp of next Notify event */
+static int64_t check_notifications(struct lwm2m_ctx *ctx, const int64_t timestamp)
 {
 	struct observe_node *obs;
 	int rc;
+	int64_t next = INT64_MAX;
 
 	lwm2m_registry_lock();
 	SYS_SLIST_FOR_EACH_CONTAINER(&ctx->observer, obs, node) {
-		if (!obs->event_timestamp || timestamp < obs->event_timestamp) {
+		if (!obs->event_timestamp) {
+			continue;
+		}
+
+		if (obs->event_timestamp < next) {
+			next = obs->event_timestamp;
+		}
+
+		if (timestamp < obs->event_timestamp) {
 			continue;
 		}
 		/* Check That There is not pending process*/
-		if (obs->active_tx_operation) {
+		if (obs->active_notify != NULL) {
 			continue;
 		}
 
@@ -588,6 +624,7 @@ static void check_notifications(struct lwm2m_ctx *ctx, const int64_t timestamp)
 		obs->event_timestamp =
 			engine_observe_shedule_next_event(obs, ctx->srv_obj_inst, timestamp);
 		obs->last_timestamp = timestamp;
+
 		if (!rc) {
 			/* create at most one notification */
 			goto cleanup;
@@ -595,6 +632,58 @@ static void check_notifications(struct lwm2m_ctx *ctx, const int64_t timestamp)
 	}
 cleanup:
 	lwm2m_registry_unlock();
+	return next;
+}
+
+/**
+ * @brief Check TX queue states as well as number or pending CoAP transmissions.
+ *
+ * If all queues are empty and there is no packet we are currently transmitting and no
+ * CoAP responses (pendings) we are waiting, inform the application by a callback
+ * that socket is in state LWM2M_SOCKET_STATE_NO_DATA.
+ * Otherwise, before sending a packet, depending on the state of the queues, inform with
+ * one of the ONGOING, ONE_RESPONSE or LAST indicators.
+ *
+ * @param ctx Client context.
+ * @param ongoing_tx Current packet to be transmitted or NULL.
+ */
+static void hint_socket_state(struct lwm2m_ctx *ctx, struct lwm2m_message *ongoing_tx)
+{
+	bool empty;
+	size_t pendings;
+
+	if (!ctx || !ctx->set_socket_state) {
+		return;
+	}
+
+	lwm2m_client_lock(ctx);
+#if defined(CONFIG_LWM2M_QUEUE_MODE_ENABLED)
+	empty = sys_slist_is_empty(&ctx->pending_sends) &&
+		sys_slist_is_empty(&ctx->queued_messages);
+#else
+	empty = sys_slist_is_empty(&ctx->pending_sends);
+#endif
+	pendings = coap_pendings_count(ctx->pendings, ARRAY_SIZE(ctx->pendings));
+	lwm2m_client_unlock(ctx);
+
+	if (ongoing_tx) {
+		/* Check if more than current TX is in pendings list*/
+		if (pendings > 1) {
+			empty = false;
+		}
+
+		bool ongoing_block_tx = coap_block_has_more(&ongoing_tx->cpkt);
+
+		if (!empty || ongoing_block_tx) {
+			ctx->set_socket_state(ctx->sock_fd, LWM2M_SOCKET_STATE_ONGOING);
+		} else if (ongoing_tx->type == COAP_TYPE_CON) {
+			ctx->set_socket_state(ctx->sock_fd, LWM2M_SOCKET_STATE_ONE_RESPONSE);
+		} else {
+			ctx->set_socket_state(ctx->sock_fd, LWM2M_SOCKET_STATE_LAST);
+		}
+	} else if (empty && pendings == 0) {
+		ctx->set_socket_state(ctx->sock_fd, LWM2M_SOCKET_STATE_NO_DATA);
+	}
 }
 
 static int socket_recv_message(struct lwm2m_ctx *client_ctx)
@@ -605,8 +694,8 @@ static int socket_recv_message(struct lwm2m_ctx *client_ctx)
 	static struct sockaddr from_addr;
 
 	from_addr_len = sizeof(from_addr);
-	len = zsock_recvfrom(client_ctx->sock_fd, in_buf, sizeof(in_buf) - 1, 0, &from_addr,
-			     &from_addr_len);
+	len = zsock_recvfrom(client_ctx->sock_fd, in_buf, sizeof(in_buf) - 1, ZSOCK_MSG_DONTWAIT,
+			     &from_addr, &from_addr_len);
 
 	if (len < 0) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -626,149 +715,262 @@ static int socket_recv_message(struct lwm2m_ctx *client_ctx)
 	}
 
 	in_buf[len] = 0U;
-	lwm2m_udp_receive(client_ctx, in_buf, len, &from_addr, handle_request);
+	lwm2m_udp_receive(client_ctx, in_buf, len, &from_addr);
 
 	return 0;
 }
 
-static int socket_send_message(struct lwm2m_ctx *client_ctx)
+static int socket_send_message(struct lwm2m_ctx *ctx)
 {
-	sys_snode_t *msg_node = sys_slist_get(&client_ctx->pending_sends);
+	int rc;
+	sys_snode_t *msg_node;
 	struct lwm2m_message *msg;
+
+	lwm2m_client_lock(ctx);
+	msg_node = sys_slist_get(&ctx->pending_sends);
+	lwm2m_client_unlock(ctx);
 
 	if (!msg_node) {
 		return 0;
 	}
+
 	msg = SYS_SLIST_CONTAINER(msg_node, msg, node);
-	return lwm2m_send_message(msg);
+	if (!msg || !msg->ctx) {
+		LOG_ERR("LwM2M message is invalid.");
+		return -EINVAL;
+	}
+
+	if (msg->type == COAP_TYPE_CON) {
+		coap_pending_cycle(msg->pending);
+	}
+
+	hint_socket_state(ctx, msg);
+
+	rc = zsock_send(msg->ctx->sock_fd, msg->cpkt.data, msg->cpkt.offset, 0);
+
+	if (rc < 0) {
+		LOG_ERR("Failed to send packet, err %d", errno);
+		rc = -errno;
+	} else {
+		engine_update_tx_time();
+	}
+
+	if (msg->type != COAP_TYPE_CON) {
+		if (!lwm2m_outgoing_is_part_of_blockwise(msg)) {
+			lwm2m_reset_message(msg, true);
+		}
+	}
+
+	return rc;
 }
 
 static void socket_reset_pollfd_events(void)
 {
-	for (int i = 0; i < sock_nfds; ++i) {
+	for (int i = 0; i < MAX_POLL_FD; ++i) {
+		bool set_pollout = false;
+
+		if (sock_ctx[i] != NULL) {
+			lwm2m_client_lock(sock_ctx[i]);
+			set_pollout = !sys_slist_is_empty(&sock_ctx[i]->pending_sends);
+			lwm2m_client_unlock(sock_ctx[i]);
+		}
+
 		sock_fds[i].events =
 			ZSOCK_POLLIN |
-			(sys_slist_is_empty(&sock_ctx[i]->pending_sends) ? 0 : ZSOCK_POLLOUT);
+			(set_pollout ? ZSOCK_POLLOUT : 0);
 		sock_fds[i].revents = 0;
 	}
 }
 
 /* LwM2M main work loop */
-static void socket_loop(void)
+static void socket_loop(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
 	int i, rc;
-	int64_t timestamp;
-	int32_t timeout, next_retransmit;
+	int64_t now, next;
+	int64_t timeout, next_tx;
+	bool rd_client_paused;
 
 	while (1) {
+		rd_client_paused = false;
 		/* Check is Thread Suspend Requested */
 		if (suspend_engine_thread) {
-#if defined(CONFIG_LWM2M_RD_CLIENT_SUPPORT)
-			lwm2m_rd_client_pause();
-#endif
+			rc = lwm2m_rd_client_pause();
+			if (rc == 0) {
+				rd_client_paused = true;
+			} else {
+				LOG_ERR("Could not pause RD client");
+			}
+
 			suspend_engine_thread = false;
 			active_engine_thread = false;
 			k_thread_suspend(engine_thread_id);
 			active_engine_thread = true;
-#if defined(CONFIG_LWM2M_RD_CLIENT_SUPPORT)
-			lwm2m_rd_client_resume();
-#endif
-		}
 
-		timestamp = k_uptime_get();
-		timeout = lwm2m_engine_service(timestamp);
-
-		/* wait for sockets */
-		if (sock_nfds < 1) {
-			k_msleep(timeout);
-			continue;
-		}
-
-		for (i = 0; i < sock_nfds; ++i) {
-			if (sock_ctx[i] != NULL &&
-			    sys_slist_is_empty(&sock_ctx[i]->pending_sends)) {
-				next_retransmit = retransmit_request(sock_ctx[i], timestamp);
-				if (next_retransmit < timeout) {
-					timeout = next_retransmit;
+			if (rd_client_paused) {
+				rc = lwm2m_rd_client_resume();
+				if (rc < 0) {
+					LOG_ERR("Could not resume RD client");
 				}
 			}
-			if (sock_ctx[i] != NULL &&
-			    sys_slist_is_empty(&sock_ctx[i]->pending_sends) &&
-			    lwm2m_rd_client_is_registred(sock_ctx[i])) {
-				check_notifications(sock_ctx[i], timestamp);
+		}
+
+		now = k_uptime_get();
+		next = lwm2m_engine_service(now);
+
+		for (i = 0; i < sock_nfds; ++i) {
+			struct lwm2m_ctx *ctx = sock_ctx[i];
+			bool is_empty;
+
+			if (ctx == NULL) {
+				continue;
+			}
+
+			lwm2m_client_lock(ctx);
+			is_empty = sys_slist_is_empty(&ctx->pending_sends);
+			lwm2m_client_unlock(ctx);
+
+			if (!is_empty) {
+				continue;
+			}
+
+			next_tx = retransmit_request(ctx, now);
+			if (next_tx < next) {
+				next = next_tx;
+			}
+			if (lwm2m_rd_client_is_registred(ctx)) {
+				next_tx = check_notifications(ctx, now);
+				if (next_tx < next) {
+					next = next_tx;
+				}
 			}
 		}
 
 		socket_reset_pollfd_events();
 
-		/*
-		 * FIXME: Currently we timeout and restart poll in case fds
-		 *        were modified.
-		 */
-		rc = zsock_poll(sock_fds, sock_nfds, timeout);
+		timeout = next > now ? next - now : 0;
+		if (IS_ENABLED(CONFIG_LWM2M_TICKLESS)) {
+			/* prevent roll-over */
+			timeout = timeout > INT32_MAX ? INT32_MAX : timeout;
+		} else {
+			timeout = timeout > ENGINE_SLEEP_MS ? ENGINE_SLEEP_MS : timeout;
+		}
+
+		rc = zsock_poll(sock_fds, MAX_POLL_FD, timeout);
 		if (rc < 0) {
 			LOG_ERR("Error in poll:%d", errno);
 			errno = 0;
-			k_msleep(ENGINE_UPDATE_INTERVAL_MS);
+			k_msleep(ENGINE_SLEEP_MS);
 			continue;
 		}
 
-		for (i = 0; i < sock_nfds; i++) {
+		for (i = 0; i < MAX_POLL_FD; i++) {
+			short revents = sock_fds[i].revents;
 
+			if (IS_ENABLED(CONFIG_LWM2M_TICKLESS) && (revents & ZSOCK_POLLIN) &&
+			    i == (MAX_POLL_FD - 1)) {
+				/* This is the control socket, just read and ignore the data */
+				zvfs_eventfd_t tmp;
+
+				zvfs_eventfd_read(sock_fds[i].fd, &tmp);
+				continue;
+			}
 			if (sock_ctx[i] != NULL && sock_ctx[i]->sock_fd < 0) {
 				continue;
 			}
 
-			if ((sock_fds[i].revents & ZSOCK_POLLERR) ||
-			    (sock_fds[i].revents & ZSOCK_POLLNVAL) ||
-			    (sock_fds[i].revents & ZSOCK_POLLHUP)) {
-				LOG_ERR("Poll reported a socket error, %02x.", sock_fds[i].revents);
+			if (revents & (ZSOCK_POLLERR | ZSOCK_POLLNVAL | ZSOCK_POLLHUP)) {
+				LOG_ERR("Poll reported a socket error, %02x.", revents);
 				if (sock_ctx[i] != NULL && sock_ctx[i]->fault_cb != NULL) {
 					sock_ctx[i]->fault_cb(EIO);
 				}
 				continue;
 			}
 
-			if (sock_fds[i].revents & ZSOCK_POLLIN) {
+			if (revents & ZSOCK_POLLIN) {
 				while (sock_ctx[i]) {
 					rc = socket_recv_message(sock_ctx[i]);
 					if (rc) {
 						break;
 					}
 				}
+
+				hint_socket_state(sock_ctx[i], NULL);
 			}
 
-			if (sock_fds[i].revents & ZSOCK_POLLOUT) {
-				socket_send_message(sock_ctx[i]);
+			if (revents & ZSOCK_POLLOUT) {
+				rc = socket_send_message(sock_ctx[i]);
+				/* Drop packets that cannot be send, CoAP layer handles retry */
+				/* Other fatal errors should trigger a recovery */
+				if (rc < 0 && rc != -EAGAIN) {
+					LOG_ERR("send() reported a socket error, %d", -rc);
+					if (sock_ctx[i] != NULL && sock_ctx[i]->fault_cb != NULL) {
+						sock_ctx[i]->fault_cb(-rc);
+					}
+				}
 			}
 		}
 	}
 }
 
-#if defined(CONFIG_LWM2M_DTLS_SUPPORT) && defined(CONFIG_TLS_CREDENTIALS)
-static int load_tls_credential(struct lwm2m_ctx *client_ctx, uint16_t res_id,
+#if defined(CONFIG_LWM2M_DTLS_SUPPORT)
+#if defined(CONFIG_TLS_CREDENTIALS)
+static void delete_tls_credentials(sec_tag_t tag)
+{
+	tls_credential_delete(tag, TLS_CREDENTIAL_PSK_ID);
+	tls_credential_delete(tag, TLS_CREDENTIAL_PSK);
+	tls_credential_delete(tag, TLS_CREDENTIAL_SERVER_CERTIFICATE);
+	tls_credential_delete(tag, TLS_CREDENTIAL_PRIVATE_KEY);
+	tls_credential_delete(tag, TLS_CREDENTIAL_CA_CERTIFICATE);
+}
+
+static bool is_pem(const void *buf, size_t len)
+{
+	static const char pem_start[] = "-----BEGIN";
+
+	if (len < sizeof(pem_start)) {
+		return false;
+	}
+	if (strncmp(pem_start, (const char *) buf, sizeof(pem_start) - 1) == 0) {
+		return true;
+	}
+	return false;
+}
+
+static int load_tls_type(struct lwm2m_ctx *client_ctx, uint16_t res_id,
 			       enum tls_credential_type type)
 {
 	int ret = 0;
 	void *cred = NULL;
 	uint16_t cred_len;
-	uint8_t cred_flags;
-	char pathstr[MAX_RESOURCE_LEN];
+	uint16_t max_len;
 
-	/* ignore error value */
-	tls_credential_delete(client_ctx->tls_tag, type);
-
-	snprintk(pathstr, sizeof(pathstr), "0/%d/%u", client_ctx->sec_obj_inst, res_id);
-
-	ret = lwm2m_engine_get_res_buf(pathstr, &cred, NULL, &cred_len, &cred_flags);
+	ret = lwm2m_get_res_buf(&LWM2M_OBJ(0, client_ctx->sec_obj_inst, res_id), &cred, &max_len,
+				&cred_len, NULL);
 	if (ret < 0) {
-		LOG_ERR("Unable to get resource data for '%s'", pathstr);
+		LOG_ERR("Unable to get resource data for %d/%d/%d", 0,  client_ctx->sec_obj_inst,
+			res_id);
 		return ret;
 	}
 
 	if (cred_len == 0) {
 		LOG_ERR("Credential data is empty");
 		return -EINVAL;
+	}
+
+	/* LwM2M registry stores strings without NULL-terminator, so we need to ensure that
+	 * string based PEM credentials are terminated properly.
+	 */
+	if (is_pem(cred, cred_len)) {
+		if (cred_len >= max_len) {
+			LOG_ERR("No space for string terminator, cannot handle PEM");
+			return -EINVAL;
+		}
+		((uint8_t *) cred)[cred_len] = 0;
+		cred_len += 1;
 	}
 
 	ret = tls_credential_add(client_ctx->tls_tag, type, cred, cred_len);
@@ -779,7 +981,191 @@ static int load_tls_credential(struct lwm2m_ctx *client_ctx, uint16_t res_id,
 
 	return ret;
 }
-#endif /* CONFIG_LWM2M_DTLS_SUPPORT && CONFIG_TLS_CREDENTIALS*/
+
+static int lwm2m_load_psk_credentials(struct lwm2m_ctx *ctx)
+{
+	int ret;
+
+	delete_tls_credentials(ctx->tls_tag);
+
+	ret = load_tls_type(ctx, 3, TLS_CREDENTIAL_PSK_ID);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = load_tls_type(ctx, 5, TLS_CREDENTIAL_PSK);
+	return ret;
+}
+
+static int lwm2m_load_x509_credentials(struct lwm2m_ctx *ctx)
+{
+	int ret;
+
+	delete_tls_credentials(ctx->tls_tag);
+
+	ret = load_tls_type(ctx, 3, TLS_CREDENTIAL_SERVER_CERTIFICATE);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = load_tls_type(ctx, 5, TLS_CREDENTIAL_PRIVATE_KEY);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = load_tls_type(ctx, 4, TLS_CREDENTIAL_CA_CERTIFICATE);
+	if (ret < 0) {
+		return ret;
+	}
+	return ret;
+}
+#else
+
+int lwm2m_load_psk_credentials(struct lwm2m_ctx *ctx)
+{
+	return -EOPNOTSUPP;
+}
+
+int lwm2m_load_x509_credentials(struct lwm2m_ctx *ctx)
+{
+	return -EOPNOTSUPP;
+}
+#endif /* CONFIG_TLS_CREDENTIALS*/
+
+static int lwm2m_load_tls_credentials(struct lwm2m_ctx *ctx)
+{
+	switch (lwm2m_security_mode(ctx)) {
+	case LWM2M_SECURITY_NOSEC:
+		if (ctx->use_dtls) {
+			return -EINVAL;
+		}
+		return 0;
+	case LWM2M_SECURITY_PSK:
+		return lwm2m_load_psk_credentials(ctx);
+	case LWM2M_SECURITY_CERT:
+		return lwm2m_load_x509_credentials(ctx);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static const int cipher_list_psk[] = {
+	MBEDTLS_TLS_PSK_WITH_AES_128_CCM_8,
+};
+
+static const int cipher_list_cert[] = {
+	MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8,
+	MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+};
+
+#endif /* CONFIG_LWM2M_DTLS_SUPPORT */
+
+int lwm2m_set_default_sockopt(struct lwm2m_ctx *ctx)
+{
+#if defined(CONFIG_LWM2M_DTLS_SUPPORT)
+	if (ctx->use_dtls) {
+		int ret;
+		uint8_t tmp;
+		sec_tag_t tls_tag_list[] = {
+			ctx->tls_tag,
+		};
+
+		ret = zsock_setsockopt(ctx->sock_fd, SOL_TLS, TLS_SEC_TAG_LIST, tls_tag_list,
+				       sizeof(tls_tag_list));
+		if (ret < 0) {
+			ret = -errno;
+			LOG_ERR("Failed to set TLS_SEC_TAG_LIST option: %d", ret);
+			return ret;
+		}
+
+		if (IS_ENABLED(CONFIG_LWM2M_TLS_SESSION_CACHING)) {
+			int session_cache = TLS_SESSION_CACHE_ENABLED;
+
+			ret = zsock_setsockopt(ctx->sock_fd, SOL_TLS, TLS_SESSION_CACHE,
+					       &session_cache, sizeof(session_cache));
+			if (ret < 0) {
+				ret = -errno;
+				LOG_ERR("Failed to set TLS_SESSION_CACHE option: %d", errno);
+				return ret;
+			}
+		}
+		if (IS_ENABLED(CONFIG_LWM2M_DTLS_CID)) {
+			/* Enable CID */
+			int cid = TLS_DTLS_CID_SUPPORTED;
+
+			ret = zsock_setsockopt(ctx->sock_fd, SOL_TLS, TLS_DTLS_CID, &cid,
+					       sizeof(cid));
+			if (ret) {
+				ret = -errno;
+				LOG_ERR("Failed to enable TLS_DTLS_CID: %d", ret);
+				/* Not fatal, continue. */
+			}
+		}
+
+		if (ctx->desthostname != NULL && lwm2m_security_mode(ctx) == LWM2M_SECURITY_CERT) {
+			/** store character at len position */
+			tmp = ctx->desthostname[ctx->desthostnamelen];
+
+			/** change it to '\0' to pass to socket*/
+			ctx->desthostname[ctx->desthostnamelen] = '\0';
+
+			/** mbedtls ignores length */
+			ret = zsock_setsockopt(ctx->sock_fd, SOL_TLS, TLS_HOSTNAME,
+					       ctx->desthostname, ctx->desthostnamelen);
+
+			/** restore character */
+			ctx->desthostname[ctx->desthostnamelen] = tmp;
+			if (ret < 0) {
+				ret = -errno;
+				LOG_ERR("Failed to set TLS_HOSTNAME option: %d", ret);
+				return ret;
+			}
+
+			int verify = TLS_PEER_VERIFY_REQUIRED;
+
+			ret = zsock_setsockopt(ctx->sock_fd, SOL_TLS, TLS_PEER_VERIFY, &verify,
+					       sizeof(verify));
+			if (ret) {
+				LOG_ERR("Failed to set TLS_PEER_VERIFY");
+			}
+
+		} else {
+			/* By default, Mbed TLS tries to verify peer hostname, disable it */
+			int verify = TLS_PEER_VERIFY_NONE;
+
+			ret = zsock_setsockopt(ctx->sock_fd, SOL_TLS, TLS_PEER_VERIFY, &verify,
+					       sizeof(verify));
+			if (ret) {
+				LOG_ERR("Failed to set TLS_PEER_VERIFY");
+			}
+		}
+
+		switch (lwm2m_security_mode(ctx)) {
+		case LWM2M_SECURITY_PSK:
+			ret = zsock_setsockopt(ctx->sock_fd, SOL_TLS, TLS_CIPHERSUITE_LIST,
+					       cipher_list_psk, sizeof(cipher_list_psk));
+			if (ret) {
+				LOG_ERR("Failed to set TLS_CIPHERSUITE_LIST");
+			}
+			break;
+		case LWM2M_SECURITY_CERT:
+			ret = zsock_setsockopt(ctx->sock_fd, SOL_TLS, TLS_CIPHERSUITE_LIST,
+					       cipher_list_cert, sizeof(cipher_list_cert));
+			if (ret) {
+				LOG_ERR("Failed to set TLS_CIPHERSUITE_LIST (rc %d, errno %d)", ret,
+					errno);
+			}
+			break;
+		default:
+			return -EOPNOTSUPP;
+		}
+	}
+#else
+	if (!IS_ENABLED(CONFIG_LWM2M_DTLS_SUPPORT) && ctx->use_dtls) {
+		return -EOPNOTSUPP;
+	}
+#endif /* CONFIG_LWM2M_DTLS_SUPPORT */
+	return 0;
+}
 
 int lwm2m_socket_start(struct lwm2m_ctx *client_ctx)
 {
@@ -788,27 +1174,16 @@ int lwm2m_socket_start(struct lwm2m_ctx *client_ctx)
 	int ret;
 
 #if defined(CONFIG_LWM2M_DTLS_SUPPORT)
-	uint8_t tmp;
-
-	if (client_ctx->load_credentials) {
-		ret = client_ctx->load_credentials(client_ctx);
+	if (client_ctx->use_dtls) {
+		if (client_ctx->load_credentials) {
+			ret = client_ctx->load_credentials(client_ctx);
+		} else {
+			ret = lwm2m_load_tls_credentials(client_ctx);
+		}
 		if (ret < 0) {
 			return ret;
 		}
 	}
-#if defined(CONFIG_TLS_CREDENTIALS)
-	else {
-		ret = load_tls_credential(client_ctx, 3, TLS_CREDENTIAL_PSK_ID);
-		if (ret < 0) {
-			return ret;
-		}
-
-		ret = load_tls_credential(client_ctx, 5, TLS_CREDENTIAL_PSK);
-		if (ret < 0) {
-			return ret;
-		}
-	}
-#endif /* CONFIG_TLS_CREDENTIALS */
 #endif /* CONFIG_LWM2M_DTLS_SUPPORT */
 
 	if (client_ctx->sock_fd < 0) {
@@ -818,61 +1193,22 @@ int lwm2m_socket_start(struct lwm2m_ctx *client_ctx)
 		}
 	}
 
-#if defined(CONFIG_LWM2M_DTLS_SUPPORT)
-	if (client_ctx->use_dtls) {
-		sec_tag_t tls_tag_list[] = {
-			client_ctx->tls_tag,
-		};
-
-		ret = zsock_setsockopt(client_ctx->sock_fd, SOL_TLS, TLS_SEC_TAG_LIST, tls_tag_list,
-				       sizeof(tls_tag_list));
-		if (ret < 0) {
-			ret = -errno;
-			LOG_ERR("Failed to set TLS_SEC_TAG_LIST option: %d", ret);
-			goto error;
-		}
-
-		if (IS_ENABLED(CONFIG_LWM2M_TLS_SESSION_CACHING)) {
-			int session_cache = TLS_SESSION_CACHE_ENABLED;
-
-			ret = zsock_setsockopt(client_ctx->sock_fd, SOL_TLS, TLS_SESSION_CACHE,
-					       &session_cache, sizeof(session_cache));
-			if (ret < 0) {
-				ret = -errno;
-				LOG_ERR("Failed to set TLS_SESSION_CACHE option: %d", errno);
-				goto error;
-			}
-		}
-
-		if (client_ctx->hostname_verify && (client_ctx->desthostname != NULL)) {
-			/** store character at len position */
-			tmp = client_ctx->desthostname[client_ctx->desthostnamelen];
-
-			/** change it to '\0' to pass to socket*/
-			client_ctx->desthostname[client_ctx->desthostnamelen] = '\0';
-
-			/** mbedtls ignores length */
-			ret = zsock_setsockopt(client_ctx->sock_fd, SOL_TLS, TLS_HOSTNAME,
-					       client_ctx->desthostname,
-					       client_ctx->desthostnamelen);
-
-			/** restore character */
-			client_ctx->desthostname[client_ctx->desthostnamelen] = tmp;
-			if (ret < 0) {
-				ret = -errno;
-				LOG_ERR("Failed to set TLS_HOSTNAME option: %d", ret);
-				goto error;
-			}
-		}
+	if (client_ctx->set_socketoptions) {
+		ret = client_ctx->set_socketoptions(client_ctx);
+	} else {
+		ret = lwm2m_set_default_sockopt(client_ctx);
 	}
-#endif /* CONFIG_LWM2M_DTLS_SUPPORT */
+	if (ret) {
+		goto error;
+	}
+
 	if ((client_ctx->remote_addr).sa_family == AF_INET) {
 		addr_len = sizeof(struct sockaddr_in);
 	} else if ((client_ctx->remote_addr).sa_family == AF_INET6) {
 		addr_len = sizeof(struct sockaddr_in6);
 	} else {
-		lwm2m_engine_stop(client_ctx);
-		return -EPROTONOSUPPORT;
+		ret = -EPROTONOSUPPORT;
+		goto error;
 	}
 
 	if (zsock_connect(client_ctx->sock_fd, &client_ctx->remote_addr, addr_len) < 0) {
@@ -881,23 +1217,23 @@ int lwm2m_socket_start(struct lwm2m_ctx *client_ctx)
 		goto error;
 	}
 
-	flags = fcntl(client_ctx->sock_fd, F_GETFL, 0);
+	flags = zsock_fcntl(client_ctx->sock_fd, F_GETFL, 0);
 	if (flags == -1) {
 		ret = -errno;
-		LOG_ERR("fcntl(F_GETFL) failed (%d)", ret);
+		LOG_ERR("zsock_fcntl(F_GETFL) failed (%d)", ret);
 		goto error;
 	}
-	ret = fcntl(client_ctx->sock_fd, F_SETFL, flags | O_NONBLOCK);
+	ret = zsock_fcntl(client_ctx->sock_fd, F_SETFL, flags | O_NONBLOCK);
 	if (ret == -1) {
 		ret = -errno;
-		LOG_ERR("fcntl(F_SETFL) failed (%d)", ret);
+		LOG_ERR("zsock_fcntl(F_SETFL) failed (%d)", ret);
 		goto error;
 	}
 
 	LOG_INF("Connected, sock id %d", client_ctx->sock_fd);
 	return 0;
 error:
-	lwm2m_engine_stop(client_ctx);
+	lwm2m_socket_close(client_ctx);
 	return ret;
 }
 
@@ -923,15 +1259,14 @@ int lwm2m_engine_stop(struct lwm2m_ctx *client_ctx)
 
 int lwm2m_engine_start(struct lwm2m_ctx *client_ctx)
 {
-	char pathstr[MAX_RESOURCE_LEN];
 	char *url;
 	uint16_t url_len;
 	uint8_t url_data_flags;
 	int ret = 0U;
 
 	/* get the server URL */
-	snprintk(pathstr, sizeof(pathstr), "0/%d/0", client_ctx->sec_obj_inst);
-	ret = lwm2m_engine_get_res_buf(pathstr, (void **)&url, NULL, &url_len, &url_data_flags);
+	ret = lwm2m_get_res_buf(&LWM2M_OBJ(0, client_ctx->sec_obj_inst, 0), (void **)&url, NULL,
+				&url_len, &url_data_flags);
 	if (ret < 0) {
 		return ret;
 	}
@@ -953,6 +1288,13 @@ int lwm2m_engine_pause(void)
 	}
 
 	suspend_engine_thread = true;
+	lwm2m_engine_wake_up();
+
+	/* Check if pause requested within a engine thread, a callback for example. */
+	if (engine_thread_id == k_current_get()) {
+		LOG_DBG("Pause requested");
+		return 0;
+	}
 
 	while (active_engine_thread) {
 		k_msleep(10);
@@ -969,31 +1311,74 @@ int lwm2m_engine_resume(void)
 	}
 
 	k_thread_resume(engine_thread_id);
-	while (!active_engine_thread) {
-		k_msleep(10);
-	}
-	LOG_INF("LWM2M engine thread resume");
+	lwm2m_engine_wake_up();
+
 	return 0;
 }
 
-static int lwm2m_engine_init(const struct device *dev)
+void lwm2m_engine_lock(void)
 {
-	int i;
+	(void)k_mutex_lock(&engine_lock, K_FOREVER);
+}
 
-	for (i = 0; i < LWM2M_ENGINE_MAX_OBSERVER_PATH; i++) {
+void lwm2m_engine_unlock(void)
+{
+	k_mutex_unlock(&engine_lock);
+}
+
+void lwm2m_client_lock(struct lwm2m_ctx *ctx)
+{
+	(void)k_mutex_lock(&ctx->lock, K_FOREVER);
+}
+
+void lwm2m_client_unlock(struct lwm2m_ctx *ctx)
+{
+	k_mutex_unlock(&ctx->lock);
+}
+
+static int lwm2m_engine_init(void)
+{
+	for (int i = 0; i < LWM2M_ENGINE_MAX_OBSERVER_PATH; i++) {
 		sys_slist_append(lwm2m_obs_obj_path_list(), &observe_paths[i].node);
 	}
 
-	(void)memset(block1_contexts, 0, sizeof(block1_contexts));
+	/* Reset all socket handles to -1 so unused ones are ignored by zsock_poll() */
+	for (int i = 0; i < MAX_POLL_FD; ++i) {
+		sock_fds[i].fd = -1;
+	}
 
-	if (IS_ENABLED(CONFIG_LWM2M_RESOURCE_DATA_CACHE_SUPPORT)) {
-		/* Init data cache */
-		lwm2m_engine_data_cache_init();
+	if (IS_ENABLED(CONFIG_LWM2M_TICKLESS)) {
+		/* Create eventfd that is used to wake zsock_poll() in the main loop */
+		int efd = zvfs_eventfd(0, ZVFS_EFD_NONBLOCK);
+
+		if (efd == -1) {
+			int err = errno;
+
+			LOG_ERR("Error; eventfd() returned %d", err);
+			return -err;
+		}
+		/* Last poll-handle is reserved for control eventfd */
+		sock_fds[MAX_POLL_FD - 1].fd = efd;
+	}
+
+	lwm2m_clear_block_contexts();
+#if defined(CONFIG_LWM2M_COAP_BLOCK_TRANSFER)
+	lwm2m_engine_lock();
+	(void)memset(output_block_contexts, 0, sizeof(output_block_contexts));
+	lwm2m_engine_unlock();
+#endif
+
+	STRUCT_SECTION_FOREACH(lwm2m_init_func, init) {
+		int ret = init->f();
+
+		if (ret) {
+			LOG_ERR("Init function %p returned %d", init, ret);
+		}
 	}
 
 	/* start sock receive thread */
 	engine_thread_id = k_thread_create(&engine_thread_data, &engine_thread_stack[0],
-			K_KERNEL_STACK_SIZEOF(engine_thread_stack), (k_thread_entry_t)socket_loop,
+			K_KERNEL_STACK_SIZEOF(engine_thread_stack), socket_loop,
 			NULL, NULL, NULL, THREAD_PRIORITY, 0, K_NO_WAIT);
 	k_thread_name_set(&engine_thread_data, "lwm2m-sock-recv");
 	LOG_DBG("LWM2M engine socket receive thread started");

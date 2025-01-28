@@ -3,19 +3,11 @@
 
 config BT_CRYPTO
 	bool
-	select TINYCRYPT
-	select TINYCRYPT_AES
-	select TINYCRYPT_AES_CMAC
+	select MBEDTLS if !BUILD_WITH_TFM
+	select MBEDTLS_PSA_CRYPTO_C if !BUILD_WITH_TFM
+	select PSA_WANT_KEY_TYPE_AES
+	select PSA_WANT_ALG_CMAC
+	select PSA_WANT_ALG_ECB_NO_PADDING
+	imply MBEDTLS_AES_ROM_TABLES if MBEDTLS_PSA_CRYPTO_C
 	help
 	  This option enables the Bluetooth Cryptographic Toolbox.
-
-config BT_DEBUG_CRYPTO
-	bool "Bluetooth Cryptographic Toolbox debug"
-	depends on BT_CRYPTO
-	help
-	  This option enables debug log output for the Bluetooth
-	  Cryptographic Toolbox.
-
-	  WARNING: This option prints out private security keys such as
-	  the Long Term Key.
-	  Use of this feature in production is strongly discouraged.

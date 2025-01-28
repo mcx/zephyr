@@ -163,6 +163,11 @@ static int dacx0508_channel_setup(const struct device *dev,
 		return -ENOTSUP;
 	}
 
+	if (channel_cfg->internal) {
+		LOG_ERR("Internal channels not supported");
+		return -ENOTSUP;
+	}
+
 	data->configured |= BIT(channel_cfg->channel_id);
 
 	return 0;
@@ -330,7 +335,7 @@ static int dacx0508_init(const struct device *dev)
 	struct dacx0508_data *data = dev->data;
 	int ret;
 
-	if (!spi_is_ready(&config->bus)) {
+	if (!spi_is_ready_dt(&config->bus)) {
 		LOG_ERR("SPI bus %s not ready", config->bus.bus->name);
 		return -ENODEV;
 	}
@@ -356,7 +361,7 @@ static int dacx0508_init(const struct device *dev)
 	return 0;
 }
 
-static const struct dac_driver_api dacx0508_driver_api = {
+static DEVICE_API(dac, dacx0508_driver_api) = {
 	.channel_setup = dacx0508_channel_setup,
 	.write_value = dacx0508_write_value,
 };
@@ -386,7 +391,7 @@ static const struct dac_driver_api dacx0508_driver_api = {
 			    &dac##t##_data_##n, \
 			    &dac##t##_config_##n, POST_KERNEL, \
 			    CONFIG_DAC_DACX0508_INIT_PRIORITY, \
-			    &dacx0508_driver_api)
+			    &dacx0508_driver_api);
 
 /*
  * DAC60508: 12-bit

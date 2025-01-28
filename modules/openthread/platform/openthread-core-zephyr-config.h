@@ -61,6 +61,18 @@
 #endif
 
 /**
+ * @def CONFIG_OPENTHREAD_TMF_ADDRESS_CACHE_MAX_SNOOP_ENTRIES
+ *
+ * The maximum number of EID-to-RLOC cache entries that can be used for
+ * "snoop optimization" where an entry is created by inspecting a received message.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_TMF_ADDRESS_CACHE_MAX_SNOOP_ENTRIES
+#define OPENTHREAD_CONFIG_TMF_ADDRESS_CACHE_MAX_SNOOP_ENTRIES                  \
+	CONFIG_OPENTHREAD_TMF_ADDRESS_CACHE_MAX_SNOOP_ENTRIES
+#endif
+
+/**
  * @def OPENTHREAD_CONFIG_LOG_PREPEND_LEVEL
  *
  * Define to prepend the log level to all log messages.
@@ -199,8 +211,9 @@
  *
  */
 #define OPENTHREAD_CONFIG_PLATFORM_USEC_TIMER_ENABLE                                               \
-	(CONFIG_OPENTHREAD_CSL_RECEIVER &&                                                         \
-	 (OPENTHREAD_CONFIG_THREAD_VERSION >= OT_THREAD_VERSION_1_2))
+	((CONFIG_OPENTHREAD_CSL_RECEIVER &&                                                        \
+	  (OPENTHREAD_CONFIG_THREAD_VERSION >= OT_THREAD_VERSION_1_2)) ||                          \
+	 CONFIG_OPENTHREAD_WAKEUP_END_DEVICE)
 
 /* Zephyr does not use OpenThread's heap. mbedTLS will use heap memory allocated
  * by Zephyr. Here, we use some dummy values to prevent OpenThread warnings.
@@ -272,26 +285,14 @@
 #define RADIO_CONFIG_SRC_MATCH_EXT_ENTRY_NUM 0
 
 /**
- * @def OPENTHREAD_CONFIG_RADIO_LINK_IEEE_802_15_4_ENABLE
+ * @def OPENTHREAD_CONFIG_MAC_CSL_REQUEST_AHEAD_US
  *
- * Set to 1 to enable support for IEEE802.15.4 radio link.
- *
- */
-#ifdef CONFIG_OPENTHREAD_RADIO_LINK_IEEE_802_15_4_ENABLE
-#define OPENTHREAD_CONFIG_RADIO_LINK_IEEE_802_15_4_ENABLE \
-	CONFIG_OPENTHREAD_RADIO_LINK_IEEE_802_15_4_ENABLE
-#endif /* CONFIG_OPENTHREAD_RADIO_LINK_IEEE_802_15_4_ENABLE */
-
-/**
- * @def OPENTHREAD_CONFIG_RADIO_LINK_TREL_ENABLE
- *
- * Set to 1 to enable support for Thread Radio Encapsulation Link (TREL).
+ * Define how many microseconds ahead should MAC deliver CSL frame to SubMac.
  *
  */
-#ifdef CONFIG_OPENTHREAD_RADIO_LINK_TREL_ENABLE
-#define OPENTHREAD_CONFIG_RADIO_LINK_TREL_ENABLE \
-	CONFIG_OPENTHREAD_RADIO_LINK_TREL_ENABLE
-#endif /* CONFIG_OPENTHREAD_RADIO_LINK_TREL_ENABLE */
+#ifdef CONFIG_OPENTHREAD_CSL_REQUEST_TIME_AHEAD
+#define OPENTHREAD_CONFIG_MAC_CSL_REQUEST_AHEAD_US CONFIG_OPENTHREAD_CSL_REQUEST_TIME_AHEAD
+#endif /* CONFIG_OPENTHREAD_CSL_REQUEST_TIME_AHEAD */
 
 /**
  * @def OPENTHREAD_CONFIG_CSL_RECEIVE_TIME_AHEAD
@@ -307,14 +308,34 @@
 #endif /* CONFIG_OPENTHREAD_CSL_RECEIVE_TIME_AHEAD */
 
 /**
- * @def OPENTHREAD_CONFIG_CSL_MIN_RECEIVE_ON
+ * @def OPENTHREAD_CONFIG_MIN_RECEIVE_ON_AHEAD
  *
- * The minimum CSL receive window (in microseconds) required to receive an IEEE 802.15.4 frame.
+ * The minimum time (microseconds) that radio has to be in receive mode before the start of the MHR.
  *
  */
-#ifdef CONFIG_OPENTHREAD_CSL_MIN_RECEIVE_ON
-#define OPENTHREAD_CONFIG_CSL_MIN_RECEIVE_ON CONFIG_OPENTHREAD_CSL_MIN_RECEIVE_ON
-#endif /* CONFIG_OPENTHREAD_CSL_MIN_RECEIVE_ON */
+#ifdef CONFIG_OPENTHREAD_MIN_RECEIVE_ON_AHEAD
+#define OPENTHREAD_CONFIG_MIN_RECEIVE_ON_AHEAD CONFIG_OPENTHREAD_MIN_RECEIVE_ON_AHEAD
+#endif /* CONFIG_OPENTHREAD_MIN_RECEIVE_ON_AHEAD */
+
+/**
+ * @def OPENTHREAD_CONFIG_MIN_RECEIVE_ON_AFTER
+ *
+ * The minimum time (microseconds) that radio has to be in receive mode after the start of the MHR .
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_MIN_RECEIVE_ON_AFTER
+#define OPENTHREAD_CONFIG_MIN_RECEIVE_ON_AFTER CONFIG_OPENTHREAD_MIN_RECEIVE_ON_AFTER
+#endif /* CONFIG_OPENTHREAD_MIN_RECEIVE_ON_AFTER */
+
+/**
+ * @def OPENTHREAD_CONFIG_CSL_TIMEOUT
+ *
+ * The default CSL timeout in seconds.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_CSL_TIMEOUT
+#define OPENTHREAD_CONFIG_CSL_TIMEOUT CONFIG_OPENTHREAD_CSL_TIMEOUT
+#endif /* CONFIG_OPENTHREAD_CSL_TIMEOUT */
 
 /**
  * @def OPENTHREAD_CONFIG_MAC_SOFTWARE_TX_SECURITY_ENABLE
@@ -369,14 +390,6 @@
 #endif /* CONFIG_OPENTHREAD_IP6_MAX_EXT_MCAST_ADDRS */
 
 /**
- * @def OPENTHREAD_CONFIG_TCP_ENABLE
- *
- * Enable TCP.
- *
- */
-#define OPENTHREAD_CONFIG_TCP_ENABLE IS_ENABLED(CONFIG_OPENTHREAD_TCP_ENABLE)
-
-/**
  * @def OPENTHREAD_CONFIG_CLI_TCP_ENABLE
  *
  * Enable TCP in the CLI tool.
@@ -392,16 +405,6 @@
  */
 #ifdef CONFIG_OPENTHREAD_CRYPTO_PSA
 #define OPENTHREAD_CONFIG_CRYPTO_LIB OPENTHREAD_CONFIG_CRYPTO_LIB_PSA
-#endif
-
-/**
- * @def OPENTHREAD_CONFIG_PLATFORM_KEY_REFERENCES_ENABLE
- *
- * Set to 1 if you want to enable key reference usage support.
- *
- */
-#ifdef CONFIG_OPENTHREAD_PLATFORM_KEY_REFERENCES_ENABLE
-#define OPENTHREAD_CONFIG_PLATFORM_KEY_REFERENCES_ENABLE 1
 #endif
 
 /**
@@ -425,6 +428,16 @@
 #endif
 
 /**
+ * @def OPENTHREAD_CONFIG_PLATFORM_MESSAGE_MANAGEMENT
+ *
+ * The message pool is managed by platform defined logic.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_PLATFORM_MESSAGE_MANAGEMENT
+#define OPENTHREAD_CONFIG_PLATFORM_MESSAGE_MANAGEMENT CONFIG_OPENTHREAD_PLATFORM_MESSAGE_MANAGEMENT
+#endif
+
+/**
  * @def OPENTHREAD_CONFIG_MAC_STAY_AWAKE_BETWEEN_FRAGMENTS
  *
  * Enable to stay awake between fragments while transmitting a large packet,
@@ -434,6 +447,67 @@
 #ifdef CONFIG_OPENTHREAD_MAC_STAY_AWAKE_BETWEEN_FRAGMENTS
 #define OPENTHREAD_CONFIG_MAC_STAY_AWAKE_BETWEEN_FRAGMENTS                                         \
 	CONFIG_OPENTHREAD_MAC_STAY_AWAKE_BETWEEN_FRAGMENTS
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_POWER_CALIBRATION_ENABLE
+ *
+ * In Zephyr, power calibration is handled by Radio Driver, so it can't be handled on OT level.
+ *
+ */
+#ifndef OPENTHREAD_CONFIG_POWER_CALIBRATION_ENABLE
+#define OPENTHREAD_CONFIG_POWER_CALIBRATION_ENABLE 0
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_RADIO_STATS
+ *
+ * Enable support for Radio Statistics.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_RADIO_STATS
+#define OPENTHREAD_CONFIG_RADIO_STATS_ENABLE CONFIG_OPENTHREAD_RADIO_STATS
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_STORE_FRAME_COUNTER_AHEAD
+ *
+ * The value ahead of the current frame counter for persistent storage.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_STORE_FRAME_COUNTER_AHEAD
+#define OPENTHREAD_CONFIG_STORE_FRAME_COUNTER_AHEAD CONFIG_OPENTHREAD_STORE_FRAME_COUNTER_AHEAD
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_CHILD_SUPERVISION_CHECK_TIMEOUT
+ *
+ * The value of the child supervision check timeout in seconds.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_CHILD_SUPERVISION_CHECK_TIMEOUT
+#define OPENTHREAD_CONFIG_CHILD_SUPERVISION_CHECK_TIMEOUT                                          \
+	CONFIG_OPENTHREAD_CHILD_SUPERVISION_CHECK_TIMEOUT
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_CHILD_SUPERVISION_INTERVAL
+ *
+ * The value of the child supervision interval in seconds.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_CHILD_SUPERVISION_INTERVAL
+#define OPENTHREAD_CONFIG_CHILD_SUPERVISION_INTERVAL CONFIG_OPENTHREAD_CHILD_SUPERVISION_INTERVAL
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_MLE_CHILD_TIMEOUT_DEFAULT
+ *
+ * The value of the MLE child timeout in seconds.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_MLE_CHILD_TIMEOUT
+#define OPENTHREAD_CONFIG_MLE_CHILD_TIMEOUT_DEFAULT CONFIG_OPENTHREAD_MLE_CHILD_TIMEOUT
 #endif
 
 #endif  /* OPENTHREAD_CORE_ZEPHYR_CONFIG_H_ */

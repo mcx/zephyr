@@ -63,6 +63,10 @@ if(QEMU_PTY)
 elseif(QEMU_PIPE)
   # Redirect console to a pipe, used for running automated tests.
   list(APPEND QEMU_FLAGS -chardev pipe,id=con,mux=on,path=${QEMU_PIPE})
+  # Create the pipe file before passing the path to QEMU.
+  foreach(target ${qemu_targets})
+    list(APPEND PRE_QEMU_COMMANDS_FOR_${target} COMMAND ${CMAKE_COMMAND} -E touch ${QEMU_PIPE})
+  endforeach()
 else()
   # Redirect console to stdio, used for manual debugging.
   list(APPEND QEMU_FLAGS -chardev stdio,id=con,mux=on)
@@ -96,7 +100,7 @@ endif()
 # Add a BT serial device when building for bluetooth, unless the
 # application explicitly opts out with NO_QEMU_SERIAL_BT_SERVER.
 if(CONFIG_BT)
-  if(CONFIG_BT_NO_DRIVER)
+  if(NOT CONFIG_BT_UART)
       set(NO_QEMU_SERIAL_BT_SERVER 1)
   endif()
   if(NOT NO_QEMU_SERIAL_BT_SERVER)
@@ -250,21 +254,30 @@ elseif(QEMU_NET_STACK)
     # NET_TOOLS has been set to the net-tools repo path
     # net-tools/monitor_15_4 has been built beforehand
 
-    set_ifndef(NET_TOOLS ${ZEPHYR_BASE}/../net-tools) # Default if not set
+    set_ifndef(NET_TOOLS ${ZEPHYR_BASE}/../tools/net-tools) # Default if not set
 
     list(APPEND PRE_QEMU_COMMANDS_FOR_server
-      COMMAND
+      #Disable Ctrl-C to ensure that users won't accidentally exit
+      #w/o killing the monitor.
+      COMMAND stty intr ^d
+
       #This command is run in the background using '&'. This prevents
       #chaining other commands with '&&'. The command is enclosed in '{}'
       #to fix this.
-      {
-      ${NET_TOOLS}/monitor_15_4
-      ${PCAP}
-      /tmp/ip-stack-server
-      /tmp/ip-stack-client
-      > /dev/null &
+      COMMAND {
+        ${NET_TOOLS}/monitor_15_4
+        ${PCAP}
+        /tmp/ip-stack-server
+        /tmp/ip-stack-client
+        > /dev/null &
       }
-      # TODO: Support cleanup of the monitor_15_4 process
+      )
+    set(POST_QEMU_COMMANDS_FOR_server
+      # Re-enable Ctrl-C.
+      COMMAND stty intr ^c
+
+      # Kill the monitor_15_4 sub-process
+      COMMAND pkill -P $$$$
       )
   endif()
 endif(QEMU_PIPE_STACK)
@@ -348,6 +361,37 @@ if(CONFIG_IVSHMEM)
   endif()
 endif()
 
+if(CONFIG_NVME)
+  if(qemu_alternate_path)
+    find_program(
+      QEMU_IMG
+      PATHS ${qemu_alternate_path}
+      NO_DEFAULT_PATH
+      NAMES qemu-img
+    )
+  else()
+    find_program(
+      QEMU_IMG
+      qemu-img
+    )
+  endif()
+
+  list(APPEND QEMU_EXTRA_FLAGS
+    -drive file=${ZEPHYR_BINARY_DIR}/nvme_disk.img,if=none,id=nvm1
+    -device nvme,serial=deadbeef,drive=nvm1
+  )
+
+  add_custom_target(qemu_nvme_disk
+    COMMAND
+    ${QEMU_IMG}
+    create
+    ${ZEPHYR_BINARY_DIR}/nvme_disk.img
+    1M
+  )
+else()
+  add_custom_target(qemu_nvme_disk)
+endif()
+
 if(NOT QEMU_PIPE)
   set(QEMU_PIPE_COMMENT "\nTo exit from QEMU enter: 'CTRL+a, x'\n")
 endif()
@@ -364,7 +408,18 @@ set(env_qemu $ENV{QEMU_EXTRA_FLAGS})
 separate_arguments(env_qemu)
 list(APPEND QEMU_EXTRA_FLAGS ${env_qemu})
 
-list(APPEND MORE_FLAGS_FOR_debugserver_qemu -s -S)
+# Also append QEMU flags from config
+if(NOT CONFIG_QEMU_EXTRA_FLAGS STREQUAL "")
+  set(config_qemu_flags ${CONFIG_QEMU_EXTRA_FLAGS})
+  separate_arguments(config_qemu_flags)
+  list(APPEND QEMU_EXTRA_FLAGS "${config_qemu_flags}")
+endif()
+
+list(APPEND MORE_FLAGS_FOR_debugserver_qemu -S)
+
+if(NOT CONFIG_QEMU_GDBSERVER_LISTEN_DEV STREQUAL "")
+  list(APPEND MORE_FLAGS_FOR_debugserver_qemu -gdb "${CONFIG_QEMU_GDBSERVER_LISTEN_DEV}")
+endif()
 
 # Architectures can define QEMU_KERNEL_FILE to use a specific output
 # file to pass to qemu (and a "qemu_kernel_target" target to generate
@@ -394,12 +449,13 @@ foreach(target ${qemu_targets})
     ${MORE_FLAGS_FOR_${target}}
     ${QEMU_SMP_FLAGS}
     ${QEMU_KERNEL_OPTION}
+    ${POST_QEMU_COMMANDS_FOR_${target}}
     DEPENDS ${logical_target_for_zephyr_elf}
     WORKING_DIRECTORY ${APPLICATION_BINARY_DIR}
     COMMENT "${QEMU_PIPE_COMMENT}[QEMU] CPU: ${QEMU_CPU_TYPE_${ARCH}}"
     USES_TERMINAL
     )
   if(DEFINED QEMU_KERNEL_FILE)
-    add_dependencies(${target} qemu_kernel_target)
+    add_dependencies(${target} qemu_nvme_disk qemu_kernel_target)
   endif()
 endforeach()

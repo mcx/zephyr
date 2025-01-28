@@ -6,13 +6,13 @@ zephyr_sources_ifdef(
 )
 
 zephyr_sources_ifdef(
-  CONFIG_LOG_BACKEND_ADSP_HDA
-  log_backend_adsp_hda.c
+  CONFIG_LOG_BACKEND_ADSP_MTRACE
+  log_backend_adsp_mtrace.c
 )
 
 zephyr_sources_ifdef(
-  CONFIG_LOG_BACKEND_ADSP_MTRACE
-  log_backend_adsp_mtrace.c
+  CONFIG_LOG_BACKEND_BLE
+  log_backend_ble.c
 )
 
 zephyr_sources_ifdef(
@@ -33,6 +33,11 @@ zephyr_sources_ifdef(
 zephyr_sources_ifdef(
   CONFIG_LOG_BACKEND_NET
   log_backend_net.c
+)
+
+zephyr_sources_ifdef(
+  CONFIG_LOG_BACKEND_WS
+  log_backend_ws.c
 )
 
 zephyr_sources_ifdef(
@@ -73,4 +78,9 @@ zephyr_sources_ifdef(
 zephyr_sources_ifdef(
   CONFIG_LOG_BACKEND_IPC_SERVICE
   log_backend_ipc_service.c
+)
+
+zephyr_sources_ifdef(
+  CONFIG_LOG_BACKEND_SEMIHOST
+  log_backend_semihost.c
 )

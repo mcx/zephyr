@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018 Justin Watson
+ * Copyright (c) 2023 Gerson Fernando Budke
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -12,6 +13,7 @@
 #include <zephyr/init.h>
 #include <soc.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/clock_control/atmel_sam_pmc.h>
 #include <zephyr/dt-bindings/gpio/atmel-sam-gpio.h>
 #include <zephyr/irq.h>
 
@@ -24,7 +26,8 @@ struct gpio_sam_config {
 	struct gpio_driver_config common;
 	Pio *regs;
 	config_func_t config_func;
-	uint32_t periph_id;
+
+	const struct atmel_sam_pmc_config clock_cfg;
 };
 
 struct gpio_sam_runtime {
@@ -63,8 +66,7 @@ static int gpio_sam_port_configure(const struct device *dev, uint32_t mask,
 		pio->PIO_PUDR = mask;
 #if defined(CONFIG_SOC_SERIES_SAM4S) || \
 	defined(CONFIG_SOC_SERIES_SAM4E) || \
-	defined(CONFIG_SOC_SERIES_SAME70) || \
-	defined(CONFIG_SOC_SERIES_SAMV71)
+	defined(CONFIG_SOC_SERIES_SAMX7X)
 		/* Disable pull-down. */
 		pio->PIO_PPDDR = mask;
 #endif
@@ -105,8 +107,7 @@ static int gpio_sam_port_configure(const struct device *dev, uint32_t mask,
 	pio->PIO_PUDR = mask;
 #if defined(CONFIG_SOC_SERIES_SAM4S) || \
 	defined(CONFIG_SOC_SERIES_SAM4E) || \
-	defined(CONFIG_SOC_SERIES_SAME70) || \
-	defined(CONFIG_SOC_SERIES_SAMV71)
+	defined(CONFIG_SOC_SERIES_SAMX7X)
 	pio->PIO_PPDDR = mask;
 #endif
 	if (flags & GPIO_PULL_UP) {
@@ -114,8 +115,7 @@ static int gpio_sam_port_configure(const struct device *dev, uint32_t mask,
 		pio->PIO_PUER = mask;
 #if defined(CONFIG_SOC_SERIES_SAM4S) || \
 	defined(CONFIG_SOC_SERIES_SAM4E) || \
-	defined(CONFIG_SOC_SERIES_SAME70) || \
-	defined(CONFIG_SOC_SERIES_SAMV71)
+	defined(CONFIG_SOC_SERIES_SAMX7X)
 
 	/* Setup Pull-down resistor. */
 	} else if (flags & GPIO_PULL_DOWN) {
@@ -133,8 +133,7 @@ static int gpio_sam_port_configure(const struct device *dev, uint32_t mask,
 	}
 #elif defined(CONFIG_SOC_SERIES_SAM4S) || \
 	defined(CONFIG_SOC_SERIES_SAM4E) || \
-	defined(CONFIG_SOC_SERIES_SAME70) || \
-	defined(CONFIG_SOC_SERIES_SAMV71)
+	defined(CONFIG_SOC_SERIES_SAMX7X)
 
 	/* Setup debounce. */
 	if (flags & SAM_GPIO_DEBOUNCE) {
@@ -290,7 +289,7 @@ static int gpio_sam_manage_callback(const struct device *port,
 	return gpio_manage_callback(&context->cb, callback, set);
 }
 
-static const struct gpio_driver_api gpio_sam_api = {
+static DEVICE_API(gpio, gpio_sam_api) = {
 	.pin_configure = gpio_sam_config,
 	.port_get_raw = gpio_sam_port_get_raw,
 	.port_set_masked_raw = gpio_sam_port_set_masked_raw,
@@ -305,8 +304,9 @@ int gpio_sam_init(const struct device *dev)
 {
 	const struct gpio_sam_config * const cfg = dev->config;
 
-	/* The peripheral clock must be enabled for the interrupts to work. */
-	soc_pmc_peripheral_enable(cfg->periph_id);
+	/* Enable GPIO clock in PMC. This is necessary to enable interrupts */
+	(void)clock_control_on(SAM_DT_PMC_CONTROLLER,
+			       (clock_control_subsys_t)&cfg->clock_cfg);
 
 	cfg->config_func(dev);
 
@@ -321,7 +321,7 @@ int gpio_sam_init(const struct device *dev)
 			.port_pin_mask = GPIO_PORT_PIN_MASK_FROM_DT_INST(n),\
 		},							\
 		.regs = (Pio *)DT_INST_REG_ADDR(n),			\
-		.periph_id = DT_INST_PROP(n, peripheral_id),		\
+		.clock_cfg = SAM_DT_INST_CLOCK_PMC_CFG(n),		\
 		.config_func = port_##n##_sam_config_func,		\
 	};								\
 									\

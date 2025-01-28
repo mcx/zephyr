@@ -19,24 +19,24 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/dac.h>
 #include <zephyr/drivers/pinctrl.h>
-
+#include <zephyr/drivers/clock_control/atmel_sam_pmc.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/irq.h>
 LOG_MODULE_REGISTER(dac_sam, CONFIG_DAC_LOG_LEVEL);
 
-BUILD_ASSERT(IS_ENABLED(CONFIG_SOC_SERIES_SAME70) ||
-	     IS_ENABLED(CONFIG_SOC_SERIES_SAMV71),
-	     "Only SAME70, SAMV71 series devices are currently supported.");
+BUILD_ASSERT(IS_ENABLED(CONFIG_SOC_SERIES_SAMX7X)
+	     "Only SAMx7x series devices are currently supported.");
 
 #define DAC_CHANNEL_NO  2
 
 /* Device constant configuration parameters */
 struct dac_sam_dev_cfg {
 	Dacc *regs;
+	const struct atmel_sam_pmc_config clock_cfg;
 	const struct pinctrl_dev_config *pcfg;
 	void (*irq_config)(void);
 	uint8_t irq_id;
-	uint8_t periph_id;
 	uint8_t prescaler;
 };
 
@@ -84,6 +84,10 @@ static int dac_sam_channel_setup(const struct device *dev,
 		return -ENOTSUP;
 	}
 
+	if (channel_cfg->internal) {
+		return -ENOTSUP;
+	}
+
 	/* Enable Channel */
 	dac->DACC_CHER = DACC_CHER_CH0 << channel_cfg->channel_id;
 
@@ -103,6 +107,11 @@ static int dac_sam_write_value(const struct device *dev, uint8_t channel,
 
 	if (dac->DACC_IMR & (DACC_IMR_TXRDY0 << channel)) {
 		/* Attempting to send data on channel that's already in use */
+		return -EINVAL;
+	}
+
+	if (value >= BIT(12)) {
+		LOG_ERR("value %d out of range", value);
 		return -EINVAL;
 	}
 
@@ -133,7 +142,8 @@ static int dac_sam_init(const struct device *dev)
 	}
 
 	/* Enable DAC clock in PMC */
-	soc_pmc_peripheral_enable(dev_cfg->periph_id);
+	(void)clock_control_on(SAM_DT_PMC_CONTROLLER,
+			       (clock_control_subsys_t)&dev_cfg->clock_cfg);
 
 	retval = pinctrl_apply_state(dev_cfg->pcfg, PINCTRL_STATE_DEFAULT);
 	if (retval < 0) {
@@ -151,7 +161,7 @@ static int dac_sam_init(const struct device *dev)
 	return 0;
 }
 
-static const struct dac_driver_api dac_sam_driver_api = {
+static DEVICE_API(dac, dac_sam_driver_api) = {
 	.channel_setup = dac_sam_channel_setup,
 	.write_value = dac_sam_write_value,
 };
@@ -171,7 +181,7 @@ static const struct dac_sam_dev_cfg dacc_sam_config = {
 	.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(0),
 	.irq_id = DT_INST_IRQN(0),
 	.irq_config = dacc_irq_config,
-	.periph_id = DT_INST_PROP(0, peripheral_id),
+	.clock_cfg = SAM_DT_INST_CLOCK_PMC_CFG(0),
 	.prescaler = DT_INST_PROP(0, prescaler),
 };
 

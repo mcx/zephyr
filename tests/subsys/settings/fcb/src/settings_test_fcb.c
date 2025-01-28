@@ -193,7 +193,7 @@ void config_wipe_fcb(struct flash_sector *fs, int cnt)
 	rc = flash_area_open(TEST_PARTITION_ID, &fap);
 
 	for (i = 0; i < cnt; i++) {
-		rc = flash_area_erase(fap, fs[i].fs_off, fs[i].fs_size);
+		rc = flash_area_flatten(fap, fs[i].fs_off, fs[i].fs_size);
 		zassert_true(rc == 0, "Can't get flash area");
 	}
 }
@@ -354,13 +354,10 @@ void *settings_config_fcb_setup(void)
 	zassume_true(rc == 0, "Can't open storage flash area");
 
 	wbs = flash_area_align(fap);
-	zassume_true(wbs <= 16,
+	zassume_true(wbs <= 32,
 		"Flash driver is not compatible with the settings fcb-backend");
 	return NULL;
 }
-
-void test_config_insert2(void);
-void test_config_insert3(void);
 
 ZTEST(settings_config_fcb, test_config_insert_handler2)
 {

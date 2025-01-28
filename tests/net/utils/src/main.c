@@ -402,25 +402,25 @@ static bool check_net_addr(struct net_addr_test_data *data)
 	return true;
 }
 
-void test_net_addr(void)
+ZTEST(test_utils_fn, test_net_addr)
 {
 	int count, pass;
 
 	for (count = 0, pass = 0; count < ARRAY_SIZE(tests); count++) {
-		TC_START(tests[count].name);
+		TC_PRINT("Running test: %s: ", tests[count].name);
 
 		if (check_net_addr(tests[count].data)) {
-			TC_END(PASS, "passed\n");
+			TC_PRINT("passed\n");
 			pass++;
 		} else {
-			TC_END(FAIL, "failed\n");
+			TC_PRINT("failed\n");
 		}
 	}
 
 	zassert_equal(pass, ARRAY_SIZE(tests), "check_net_addr error");
 }
 
-void test_addr_parse(void)
+ZTEST(test_utils_fn, test_addr_parse)
 {
 	struct sockaddr addr;
 	bool ret;
@@ -523,6 +523,21 @@ void test_addr_parse(void)
 			.result = {
 				.sin_family = AF_INET,
 				.sin_port = 0,
+				.sin_addr = {
+					.s4_addr[0] = 192,
+					.s4_addr[1] = 0,
+					.s4_addr[2] = 2,
+					.s4_addr[3] = 3
+				}
+			},
+			.verdict = true
+		},
+		{
+			.address = "192.0.2.3:80/foobar",
+			.len = sizeof("192.0.2.3:80") - 1,
+			.result = {
+				.sin_family = AF_INET,
+				.sin_port = htons(80),
 				.sin_addr = {
 					.s4_addr[0] = 192,
 					.s4_addr[1] = 0,
@@ -880,7 +895,7 @@ static uint16_t calc_chksum_ref(uint16_t sum, const uint8_t *data, size_t len)
 
 uint8_t testdata[CHECKSUM_TEST_LENGTH];
 
-void test_ip_checksum(void)
+ZTEST(test_utils_fn, test_ip_checksum)
 {
 	uint16_t sum_got;
 	uint16_t sum_exp;
@@ -923,12 +938,4 @@ void test_ip_checksum(void)
 	}
 }
 
-void test_main(void)
-{
-	ztest_test_suite(test_utils_fn,
-			 ztest_user_unit_test(test_net_addr),
-			 ztest_unit_test(test_ip_checksum),
-			 ztest_unit_test(test_addr_parse));
-
-	ztest_run_test_suite(test_utils_fn);
-}
+ZTEST_SUITE(test_utils_fn, NULL, NULL, NULL, NULL, NULL);

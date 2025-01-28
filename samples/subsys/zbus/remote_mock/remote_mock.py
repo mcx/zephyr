@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # Copyright (c) 2022 Rodrigo Peixoto <rodrigopex@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-import serial
+import argparse
 import json
 from time import sleep
-import argparse
+
+import serial
 
 j = """
 [
@@ -14,7 +15,7 @@ j = """
 ]"""
 
 channels = json.loads(j)
-parser = argparse.ArgumentParser(description='Read zbus events via serial.')
+parser = argparse.ArgumentParser(description='Read zbus events via serial.', allow_abbrev=False)
 parser.add_argument("port", type=str, help='The tty or COM port to be used')
 
 args = parser.parse_args()

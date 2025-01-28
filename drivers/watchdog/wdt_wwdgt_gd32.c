@@ -57,7 +57,7 @@ static inline uint32_t gd32_wwdgt_calc_ticks(const struct device *dev,
 	uint32_t pclk;
 
 	(void)clock_control_get_rate(GD32_CLOCK_CONTROLLER,
-				       (clock_control_subsys_t *)&config->clkid,
+				       (clock_control_subsys_t)&config->clkid,
 				       &pclk);
 
 	return ((timeout * pclk)
@@ -192,7 +192,7 @@ static void gd32_wwdgt_irq_config(const struct device *dev)
 	irq_enable(DT_INST_IRQN(0));
 }
 
-static const struct wdt_driver_api wwdgt_gd32_api = {
+static DEVICE_API(wdt, wwdgt_gd32_api) = {
 	.setup = gd32_wwdgt_setup,
 	.disable = gd32_wwdgt_disable,
 	.install_timeout = gd32_wwdgt_install_timeout,
@@ -204,7 +204,7 @@ static int gd32_wwdgt_init(const struct device *dev)
 	const struct gd32_wwdgt_config *config = dev->config;
 
 	(void)clock_control_on(GD32_CLOCK_CONTROLLER,
-			       (clock_control_subsys_t *)&config->clkid);
+			       (clock_control_subsys_t)&config->clkid);
 	(void)reset_line_toggle_dt(&config->reset);
 	gd32_wwdgt_irq_config(dev);
 

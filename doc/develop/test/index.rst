@@ -8,6 +8,8 @@ Testing
 
    ztest
    twister
+   twister_statuses
+   twister/twister_blackbox
+   pytest
    coverage
-   sparse
-   ztest_deprecated
+   BabbleSim<bsim>

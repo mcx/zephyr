@@ -14,64 +14,63 @@
 #include <zephyr/kernel.h>
 #include <zephyr/syscall.h>
 #include <zephyr/arch/riscv/csr.h>
+#include <zephyr/arch/riscv/irq.h>
 #include <zephyr/arch/riscv/syscall.h>
 #include "asm_macros.inc"
 
-/* Convenience macros for loading/storing register states. */
-
-#define DO_FP_CALLER_SAVED(op, reg) \
-	op ft0, __z_arch_esf_t_ft0_OFFSET(reg)	 ;\
-	op ft1, __z_arch_esf_t_ft1_OFFSET(reg)	 ;\
-	op ft2, __z_arch_esf_t_ft2_OFFSET(reg)	 ;\
-	op ft3, __z_arch_esf_t_ft3_OFFSET(reg)	 ;\
-	op ft4, __z_arch_esf_t_ft4_OFFSET(reg)	 ;\
-	op ft5, __z_arch_esf_t_ft5_OFFSET(reg)	 ;\
-	op ft6, __z_arch_esf_t_ft6_OFFSET(reg)	 ;\
-	op ft7, __z_arch_esf_t_ft7_OFFSET(reg)	 ;\
-	op ft8, __z_arch_esf_t_ft8_OFFSET(reg)	 ;\
-	op ft9, __z_arch_esf_t_ft9_OFFSET(reg)	 ;\
-	op ft10, __z_arch_esf_t_ft10_OFFSET(reg) ;\
-	op ft11, __z_arch_esf_t_ft11_OFFSET(reg) ;\
-	op fa0, __z_arch_esf_t_fa0_OFFSET(reg)	 ;\
-	op fa1, __z_arch_esf_t_fa1_OFFSET(reg)	 ;\
-	op fa2, __z_arch_esf_t_fa2_OFFSET(reg)	 ;\
-	op fa3, __z_arch_esf_t_fa3_OFFSET(reg)	 ;\
-	op fa4, __z_arch_esf_t_fa4_OFFSET(reg)	 ;\
-	op fa5, __z_arch_esf_t_fa5_OFFSET(reg)	 ;\
-	op fa6, __z_arch_esf_t_fa6_OFFSET(reg)	 ;\
-	op fa7, __z_arch_esf_t_fa7_OFFSET(reg)	 ;
-
-#define DO_CALLER_SAVED(op) \
-	RV_E(	op t0, __z_arch_esf_t_t0_OFFSET(sp)	);\
-	RV_E(	op t1, __z_arch_esf_t_t1_OFFSET(sp)	);\
-	RV_E(	op t2, __z_arch_esf_t_t2_OFFSET(sp)	);\
-	RV_I(	op t3, __z_arch_esf_t_t3_OFFSET(sp)	);\
-	RV_I(	op t4, __z_arch_esf_t_t4_OFFSET(sp)	);\
-	RV_I(	op t5, __z_arch_esf_t_t5_OFFSET(sp)	);\
-	RV_I(	op t6, __z_arch_esf_t_t6_OFFSET(sp)	);\
-	RV_E(	op a0, __z_arch_esf_t_a0_OFFSET(sp)	);\
-	RV_E(	op a1, __z_arch_esf_t_a1_OFFSET(sp)	);\
-	RV_E(	op a2, __z_arch_esf_t_a2_OFFSET(sp)	);\
-	RV_E(	op a3, __z_arch_esf_t_a3_OFFSET(sp)	);\
-	RV_E(	op a4, __z_arch_esf_t_a4_OFFSET(sp)	);\
-	RV_E(	op a5, __z_arch_esf_t_a5_OFFSET(sp)	);\
-	RV_I(	op a6, __z_arch_esf_t_a6_OFFSET(sp)	);\
-	RV_I(	op a7, __z_arch_esf_t_a7_OFFSET(sp)	);\
-	RV_E(	op ra, __z_arch_esf_t_ra_OFFSET(sp)	)
-
-#ifdef CONFIG_SMP
-#define GET_CURRENT_CPU(dst, tmp) \
-	csrr tmp, mhartid				;\
-	la dst, _kernel + ___kernel_t_cpus_OFFSET	;\
-	shiftmul_add dst, tmp, ___cpu_t_SIZEOF
-#else
-#define GET_CURRENT_CPU(dst, tmp) \
-	la dst, _kernel + ___kernel_t_cpus_OFFSET
+#ifdef CONFIG_RISCV_SOC_HAS_ISR_STACKING
+#include <soc_isr_stacking.h>
 #endif
+
+/* Convenience macro for loading/storing register states. */
+#define DO_CALLER_SAVED(op) \
+	RV_E(	op t0, __struct_arch_esf_t0_OFFSET(sp)	);\
+	RV_E(	op t1, __struct_arch_esf_t1_OFFSET(sp)	);\
+	RV_E(	op t2, __struct_arch_esf_t2_OFFSET(sp)	);\
+	RV_I(	op t3, __struct_arch_esf_t3_OFFSET(sp)	);\
+	RV_I(	op t4, __struct_arch_esf_t4_OFFSET(sp)	);\
+	RV_I(	op t5, __struct_arch_esf_t5_OFFSET(sp)	);\
+	RV_I(	op t6, __struct_arch_esf_t6_OFFSET(sp)	);\
+	RV_E(	op a0, __struct_arch_esf_a0_OFFSET(sp)	);\
+	RV_E(	op a1, __struct_arch_esf_a1_OFFSET(sp)	);\
+	RV_E(	op a2, __struct_arch_esf_a2_OFFSET(sp)	);\
+	RV_E(	op a3, __struct_arch_esf_a3_OFFSET(sp)	);\
+	RV_E(	op a4, __struct_arch_esf_a4_OFFSET(sp)	);\
+	RV_E(	op a5, __struct_arch_esf_a5_OFFSET(sp)	);\
+	RV_I(	op a6, __struct_arch_esf_a6_OFFSET(sp)	);\
+	RV_I(	op a7, __struct_arch_esf_a7_OFFSET(sp)	);\
+	RV_E(	op ra, __struct_arch_esf_ra_OFFSET(sp)	)
+
+#ifdef CONFIG_EXCEPTION_DEBUG
+/* Convenience macro for storing callee saved register [s0 - s11] states. */
+#define STORE_CALLEE_SAVED() \
+	RV_E(	sr s0, ___callee_saved_t_s0_OFFSET(sp)		);\
+	RV_E(	sr s1, ___callee_saved_t_s1_OFFSET(sp)		);\
+	RV_I(	sr s2, ___callee_saved_t_s2_OFFSET(sp)		);\
+	RV_I(	sr s3, ___callee_saved_t_s3_OFFSET(sp)		);\
+	RV_I(	sr s4, ___callee_saved_t_s4_OFFSET(sp)		);\
+	RV_I(	sr s5, ___callee_saved_t_s5_OFFSET(sp)		);\
+	RV_I(	sr s6, ___callee_saved_t_s6_OFFSET(sp)		);\
+	RV_I(	sr s7, ___callee_saved_t_s7_OFFSET(sp)		);\
+	RV_I(	sr s8, ___callee_saved_t_s8_OFFSET(sp)		);\
+	RV_I(	sr s9, ___callee_saved_t_s9_OFFSET(sp)		);\
+	RV_I(	sr s10, ___callee_saved_t_s10_OFFSET(sp)	);\
+	RV_I(	sr s11, ___callee_saved_t_s11_OFFSET(sp)	)
+#endif /* CONFIG_EXCEPTION_DEBUG */
+
+	.macro get_current_cpu dst
+#if defined(CONFIG_SMP) || defined(CONFIG_USERSPACE)
+	csrr \dst, mscratch
+#else
+	la \dst, _kernel + ___kernel_t_cpus_OFFSET
+#endif
+	.endm
 
 /* imports */
 GDATA(_sw_isr_table)
+#ifdef CONFIG_RISCV_SOC_EXCEPTION_FROM_IRQ
 GTEXT(__soc_is_irq)
+#endif
 GTEXT(__soc_handle_irq)
 GTEXT(_Fault)
 #ifdef CONFIG_RISCV_SOC_CONTEXT_SAVE
@@ -79,7 +78,12 @@ GTEXT(__soc_save_context)
 GTEXT(__soc_restore_context)
 #endif /* CONFIG_RISCV_SOC_CONTEXT_SAVE */
 
+#ifdef CONFIG_EXCEPTION_DEBUG
+GTEXT(z_riscv_fatal_error_csf)
+#else
 GTEXT(z_riscv_fatal_error)
+#endif /* CONFIG_EXCEPTION_DEBUG */
+
 GTEXT(z_get_next_switch_handle)
 GTEXT(z_riscv_switch)
 GTEXT(z_riscv_thread_start)
@@ -91,6 +95,10 @@ GTEXT(sys_trace_isr_exit)
 
 #ifdef CONFIG_USERSPACE
 GDATA(_k_syscall_table)
+#endif
+
+#ifdef CONFIG_RISCV_SOC_HAS_CUSTOM_IRQ_HANDLING
+GTEXT(__soc_handle_all_irqs)
 #endif
 
 /* exports */
@@ -111,7 +119,8 @@ GTEXT(_isr_wrapper)
  * what standard behavior is defined). Hence, the arch level code expects
  * the following functions to be provided at the SOC level:
  *
- *     - __soc_is_irq: decide if we're handling an interrupt or an exception
+ *     - __soc_is_irq (optional): decide if we're handling an interrupt or an
+         exception
  *     - __soc_handle_irq: handle SoC-specific details for a pending IRQ
  *       (e.g. clear a pending bit in a SoC-specific register)
  *
@@ -124,73 +133,185 @@ GTEXT(_isr_wrapper)
  */
 SECTION_FUNC(exception.entry, _isr_wrapper)
 
-#ifdef CONFIG_USERSPACE
-	/*
-	 * The scratch register contains either the privileged stack pointer
-	 * to use when interrupting a user mode thread, or 0 when interrupting
-	 * kernel mode in which case the current stack should be used.
-	 */
-	csrrw sp, mscratch, sp
-	bnez sp, 1f
-
-	/* restore privileged stack pointer and zero the scratch reg */
-	csrrw sp, mscratch, sp
-1:
-#endif
-
-	/* Save caller-saved registers on current thread stack. */
-	addi sp, sp, -__z_arch_esf_t_SIZEOF
-	DO_CALLER_SAVED(sr)		;
-
-	/* Save s0 in the esf and load it with &_current_cpu. */
-	sr s0, __z_arch_esf_t_s0_OFFSET(sp)
-	GET_CURRENT_CPU(s0, t0)
+/* Provide requested alignment, which depends e.g. on MTVEC format */
+.balign CONFIG_RISCV_TRAP_HANDLER_ALIGNMENT
 
 #ifdef CONFIG_USERSPACE
-	/*
-	 * The scratch register now contains either the user mode stack
-	 * pointer, or 0 if entered from kernel mode. Retrieve that value
-	 * and zero the scratch register as we are in kernel mode now.
-	 */
-	csrrw t0, mscratch, zero
+	/* retrieve address of _current_cpu preserving s0 */
+	csrrw s0, mscratch, s0
+
+	/* preserve t0 and t1 temporarily */
+	sr t0, _curr_cpu_arch_user_exc_tmp0(s0)
+	sr t1, _curr_cpu_arch_user_exc_tmp1(s0)
+
+	/* determine if we come from user space */
+	csrr t0, mstatus
+	li t1, MSTATUS_MPP
+	and t0, t0, t1
 	bnez t0, 1f
 
-	/* came from kernel mode: adjust stack value */
-	add t0, sp, __z_arch_esf_t_SIZEOF
-1:
-	/* save stack value to be restored later */
-	sr t0, __z_arch_esf_t_sp_OFFSET(sp)
+	/* in user space we were: switch to our privileged stack */
+	mv t0, sp
+	lr sp, _curr_cpu_arch_user_exc_sp(s0)
+
+	/* Save user stack value. Coming from user space, we know this
+	 * can't overflow the privileged stack. The esf will be allocated
+	 * later but it is safe to store our saved user sp here. */
+	sr t0, (-__struct_arch_esf_SIZEOF + __struct_arch_esf_sp_OFFSET)(sp)
 
 	/* Make sure tls pointer is sane */
 	lr t0, ___cpu_t_current_OFFSET(s0)
 	lr tp, _thread_offset_to_tls(t0)
 
+	/* Make sure global pointer is sane */
+#ifdef CONFIG_RISCV_GP
+	.option push
+	.option norelax
+	la gp, __global_pointer$
+	.option pop
+#elif defined(CONFIG_RISCV_CURRENT_VIA_GP)
+	lr gp, ___cpu_t_current_OFFSET(s0)
+#endif /* CONFIG_RISCV_GP / CONFIG_RISCV_CURRENT_VIA_GP */
+
 	/* Clear our per-thread usermode flag */
 	lui t0, %tprel_hi(is_user_mode)
 	add t0, t0, tp, %tprel_add(is_user_mode)
 	sb zero, %tprel_lo(is_user_mode)(t0)
+1:
+	/* retrieve original t0/t1 values */
+	lr t0, _curr_cpu_arch_user_exc_tmp0(s0)
+	lr t1, _curr_cpu_arch_user_exc_tmp1(s0)
+
+	/* retrieve original s0 and restore _current_cpu in mscratch */
+	csrrw s0, mscratch, s0
 #endif
+
+#ifdef CONFIG_RISCV_SOC_HAS_ISR_STACKING
+	SOC_ISR_SW_STACKING
+#else
+	/* Save caller-saved registers on current thread stack. */
+	addi sp, sp, -__struct_arch_esf_SIZEOF
+	DO_CALLER_SAVED(sr)		;
+#endif /* CONFIG_RISCV_SOC_HAS_ISR_STACKING */
+
+	/* Save s0 in the esf and load it with &_current_cpu. */
+	sr s0, __struct_arch_esf_s0_OFFSET(sp)
+	get_current_cpu s0
 
 	/* Save MEPC register */
 	csrr t0, mepc
-	sr t0, __z_arch_esf_t_mepc_OFFSET(sp)
+	sr t0, __struct_arch_esf_mepc_OFFSET(sp)
 
 	/* Save MSTATUS register */
 	csrr t2, mstatus
-	sr t2, __z_arch_esf_t_mstatus_OFFSET(sp)
+	sr t2, __struct_arch_esf_mstatus_OFFSET(sp)
 
-#if defined(CONFIG_FPU) && defined(CONFIG_FPU_SHARING)
-	/* Assess whether floating-point registers need to be saved. */
-	li t1, MSTATUS_FS_INIT
-	and t0, t2, t1
-	beqz t0, skip_store_fp_caller_saved
-	DO_FP_CALLER_SAVED(fsr, sp)
-skip_store_fp_caller_saved:
-#endif /* CONFIG_FPU && CONFIG_FPU_SHARING */
+#if defined(CONFIG_FPU_SHARING)
+	/* determine if FPU access was disabled */
+	li t1, MSTATUS_FS
+	and t1, t1, t2
+	bnez t1, no_fp
+	/* determine if this is an Illegal Instruction exception */
+	csrr t2, mcause
+	li t1, CONFIG_RISCV_MCAUSE_EXCEPTION_MASK
+	and t2, t2, t1
+	li t1, 2		/* 2 = illegal instruction */
+	bne t1, t2, no_fp
+	/* determine if we trapped on an FP instruction. */
+	csrr t2, mtval		/* get faulting instruction */
+#ifdef CONFIG_QEMU_TARGET
+	/*
+	 * Some implementations may not support MTVAL in this capacity.
+	 * Notably QEMU when a CSR instruction is involved.
+	 */
+	bnez t2, 1f
+	lw t2, 0(t0)		/* t0 = mepc */
+1:
+#endif
+	andi t0, t2, 0x7f	/* keep only the opcode bits */
+	/*
+	 * Major FP opcodes:
+	 * 0000111 = LOAD-FP
+	 * 0100111 = STORE-FP
+	 * 1000011 = MADD
+	 * 1000111 = MSUB
+	 * 1001011 = NMSUB
+	 * 1001111 = NMADD
+	 * 1010011 = OP-FP
+	 */
+	xori t1, t0, 0b1010011	/* OP-FP */
+	beqz t1, is_fp
+	ori  t1, t0, 0b0100000
+	xori t1, t1, 0b0100111	/* LOAD-FP / STORE-FP */
+	beqz t1, is_fp
+	ori  t1, t0, 0b0001100
+	xori t1, t1, 0b1001111	/* MADD / MSUB / NMSUB / NMADD */
+	beqz t1, is_fp
+	/*
+	 * The FRCSR, FSCSR, FRRM, FSRM, FSRMI, FRFLAGS, FSFLAGS and FSFLAGSI
+	 * are in fact CSR instructions targeting the fcsr, frm and fflags
+	 * registers. They should be caught as FPU instructions as well.
+	 *
+	 * CSR format: csr#[31-20] src[19-15] op[14-12] dst[11-7] SYSTEM[6-0]
+	 * SYSTEM = 0b1110011, op = 0b.xx where xx is never 0
+	 * The csr# of interest are: 1=fflags, 2=frm, 3=fcsr
+	 */
+	xori t1, t0, 0b1110011	/* SYSTEM opcode */
+	bnez t1, 2f		/* not a CSR insn */
+	srli t0, t2, 12
+	andi t0, t0, 0x3
+	beqz t0, 2f		/* not a CSR insn */
+	srli t0, t2, 20		/* isolate the csr register number */
+	beqz t0, 2f		/* 0=ustatus */
+	andi t0, t0, ~0x3	/* 1=fflags, 2=frm, 3=fcsr */
+#if !defined(CONFIG_RISCV_ISA_EXT_C)
+	bnez t0, no_fp
+#else
+	beqz t0, is_fp
+2:	/* remaining non RVC (0b11) and RVC with 0b01 are not FP instructions */
+	andi t1, t2, 1
+	bnez t1, no_fp
+	/*
+	 * 001...........00 = C.FLD    RV32/64  (RV128 = C.LQ)
+	 * 001...........10 = C.FLDSP  RV32/64  (RV128 = C.LQSP)
+	 * 011...........00 = C.FLW    RV32     (RV64/128 = C.LD)
+	 * 011...........10 = C.FLWSPP RV32     (RV64/128 = C.LDSP)
+	 * 101...........00 = C.FSD    RV32/64  (RV128 = C.SQ)
+	 * 101...........10 = C.FSDSP  RV32/64  (RV128 = C.SQSP)
+	 * 111...........00 = C.FSW    RV32     (RV64/128 = C.SD)
+	 * 111...........10 = C.FSWSP  RV32     (RV64/128 = C.SDSP)
+	 *
+	 * so must be .01............. on RV64 and ..1............. on RV32.
+	 */
+	srli t0, t2, 8
+#if defined(CONFIG_64BIT)
+	andi t1, t0, 0b01100000
+	xori t1, t1, 0b00100000
+	bnez t1, no_fp
+#else
+	andi t1, t0, 0b00100000
+	beqz t1, no_fp
+#endif
+#endif /* CONFIG_RISCV_ISA_EXT_C */
+
+is_fp:	/* Process the FP trap and quickly return from exception */
+	la ra, fp_trap_exit
+	mv a0, sp
+	tail z_riscv_fpu_trap
+2:
+no_fp:	/* increment _current->arch.exception_depth */
+	lr t0, ___cpu_t_current_OFFSET(s0)
+	lb t1, _thread_offset_to_exception_depth(t0)
+	add t1, t1, 1
+	sb t1, _thread_offset_to_exception_depth(t0)
+
+	/* configure the FPU for exception mode */
+	call z_riscv_fpu_enter_exc
+#endif /* CONFIG_FPU_SHARING */
 
 #ifdef CONFIG_RISCV_SOC_CONTEXT_SAVE
 	/* Handle context saving at SOC level. */
-	addi a0, sp, __z_arch_esf_t_soc_context_OFFSET
+	addi a0, sp, __struct_arch_esf_soc_context_OFFSET
 	jal ra, __soc_save_context
 #endif /* CONFIG_RISCV_SOC_CONTEXT_SAVE */
 
@@ -204,10 +325,14 @@ skip_store_fp_caller_saved:
 	 * function (that needs to be implemented by each SOC). The result is
 	 * returned via register a0 (1: interrupt, 0 exception)
 	 */
+#ifdef CONFIG_RISCV_SOC_EXCEPTION_FROM_IRQ
 	jal ra, __soc_is_irq
-
-	/* If a0 != 0, jump to is_interrupt */
 	bnez a0, is_interrupt
+#else
+	csrr t0, mcause
+	srli t0, t0, RISCV_MCAUSE_IRQ_POS
+	bnez t0, is_interrupt
+#endif
 
 	/*
 	 * If the exception is the result of an ECALL, check whether to
@@ -215,28 +340,43 @@ skip_store_fp_caller_saved:
 	 * to report the exception.
 	 */
 	csrr t0, mcause
-	li t2, SOC_MCAUSE_EXP_MASK
+	li t2, CONFIG_RISCV_MCAUSE_EXCEPTION_MASK
 	and t0, t0, t2
 
 	/*
-	 * If mcause == SOC_MCAUSE_ECALL_EXP, handle system call from
+	 * If mcause == RISCV_EXC_ECALLM, handle system call from
 	 * kernel thread.
 	 */
-	li t1, SOC_MCAUSE_ECALL_EXP
+	li t1, RISCV_EXC_ECALLM
 	beq t0, t1, is_kernel_syscall
 
 #ifdef CONFIG_USERSPACE
 	/*
-	 * If mcause == SOC_MCAUSE_USER_ECALL_EXP, handle system call
+	 * If mcause == RISCV_EXC_ECALLU, handle system call
 	 * for user mode thread.
 	 */
-	li t1, SOC_MCAUSE_USER_ECALL_EXP
+	li t1, RISCV_EXC_ECALLU
 	beq t0, t1, is_user_syscall
+
+#if defined(CONFIG_PMP_STACK_GUARD) && defined(CONFIG_MULTITHREADING)
+	/*
+	 * Determine if we come from user space. If so, reconfigure the PMP for
+	 * kernel mode stack guard.
+	 */
+	csrr t0, mstatus
+	li t1, MSTATUS_MPP
+	and t0, t0, t1
+	bnez t0, 1f
+	lr a0, ___cpu_t_current_OFFSET(s0)
+	call z_riscv_pmp_stackguard_enable
+1:
+#endif /* CONFIG_PMP_STACK_GUARD */
+
 #endif /* CONFIG_USERSPACE */
 
 	/*
 	 * Call _Fault to handle exception.
-	 * Stack pointer is pointing to a z_arch_esf_t structure, pass it
+	 * Stack pointer is pointing to a struct_arch_esf structure, pass it
 	 * to _Fault (via register a0).
 	 * If _Fault shall return, set return address to
 	 * no_reschedule to restore stack.
@@ -255,11 +395,11 @@ is_kernel_syscall:
 	 * It's safe to always increment by 4, even with compressed
 	 * instructions, because the ecall instruction is always 4 bytes.
 	 */
-	lr t0, __z_arch_esf_t_mepc_OFFSET(sp)
+	lr t0, __struct_arch_esf_mepc_OFFSET(sp)
 	addi t0, t0, 4
-	sr t0, __z_arch_esf_t_mepc_OFFSET(sp)
+	sr t0, __struct_arch_esf_mepc_OFFSET(sp)
 
-#ifdef CONFIG_PMP_STACK_GUARD
+#if defined(CONFIG_PMP_STACK_GUARD) && defined(CONFIG_MULTITHREADING)
 	/* Re-activate PMP for m-mode */
 	li t1, MSTATUS_MPP
 	csrc mstatus, t1
@@ -268,7 +408,7 @@ is_kernel_syscall:
 #endif
 
 	/* Determine what to do. Operation code is in t0. */
-	lr t0, __z_arch_esf_t_t0_OFFSET(sp)
+	lr t0, __struct_arch_esf_t0_OFFSET(sp)
 
 	.if RV_ECALL_RUNTIME_EXCEPT != 0; .err; .endif
 	beqz t0, do_fault
@@ -281,8 +421,24 @@ is_kernel_syscall:
 #ifdef CONFIG_RISCV_ALWAYS_SWITCH_THROUGH_ECALL
 	li t1, RV_ECALL_SCHEDULE
 	bne t0, t1, skip_schedule
-	lr a0, __z_arch_esf_t_a0_OFFSET(sp)
-	lr a1, __z_arch_esf_t_a1_OFFSET(sp)
+	lr a0, __struct_arch_esf_a0_OFFSET(sp)
+	lr a1, __struct_arch_esf_a1_OFFSET(sp)
+
+#ifdef CONFIG_FPU_SHARING
+	/*
+	 * When an ECALL is used for a context-switch, the current thread has
+	 * been updated to the next thread.
+	 * Add the exception_depth back to the previous thread.
+	 */
+	lb t1, _thread_offset_to_exception_depth(a0)
+	add t1, t1, -1
+	sb t1, _thread_offset_to_exception_depth(a0)
+
+	lb t1, _thread_offset_to_exception_depth(a1)
+	add t1, t1, 1
+	sb t1, _thread_offset_to_exception_depth(a1)
+#endif
+
 	j reschedule
 skip_schedule:
 #endif
@@ -293,9 +449,32 @@ skip_schedule:
 
 do_fault:
 	/* Handle RV_ECALL_RUNTIME_EXCEPT. Retrieve reason in a0, esf in A1. */
-	lr a0, __z_arch_esf_t_a0_OFFSET(sp)
+	lr a0, __struct_arch_esf_a0_OFFSET(sp)
 1:	mv a1, sp
+
+#ifdef CONFIG_EXCEPTION_DEBUG
+	/*
+	 * Restore the s0 we saved early in ISR entry
+	 * so it shows up properly in the CSF.
+	 */
+	lr s0, __struct_arch_esf_s0_OFFSET(sp)
+
+	/* Allocate space for caller-saved registers on current thread stack */
+	addi sp, sp, -__callee_saved_t_SIZEOF
+
+	/* Save callee-saved registers to be passed as 3rd arg */
+	STORE_CALLEE_SAVED()		;
+	mv a2, sp
+
+#ifdef CONFIG_EXTRA_EXCEPTION_INFO
+	/* Store csf's addr into esf (a1 still holds the pointer to the esf at this point) */
+	sr a2 __struct_arch_esf_csf_OFFSET(a1)
+#endif /* CONFIG_EXTRA_EXCEPTION_INFO */
+
+	tail z_riscv_fatal_error_csf
+#else
 	tail z_riscv_fatal_error
+#endif /* CONFIG_EXCEPTION_DEBUG */
 
 #if defined(CONFIG_IRQ_OFFLOAD)
 do_irq_offload:
@@ -304,8 +483,8 @@ do_irq_offload:
 	 * Routine pointer is in saved a0, argument in saved a1
 	 * so we load them with a1/a0 (reversed).
 	 */
-	lr a1, __z_arch_esf_t_a0_OFFSET(sp)
-	lr a0, __z_arch_esf_t_a1_OFFSET(sp)
+	lr a1, __struct_arch_esf_a0_OFFSET(sp)
+	lr a0, __struct_arch_esf_a1_OFFSET(sp)
 
 	/* Increment _current_cpu->nested */
 	lw t1, ___cpu_t_nested_OFFSET(s0)
@@ -331,7 +510,7 @@ do_irq_offload:
 #ifdef CONFIG_USERSPACE
 is_user_syscall:
 
-#ifdef CONFIG_PMP_STACK_GUARD
+#if defined(CONFIG_PMP_STACK_GUARD) && defined(CONFIG_MULTITHREADING)
 	/*
 	 * We came from userspace and need to reconfigure the
 	 * PMP for kernel mode stack guard.
@@ -347,18 +526,18 @@ is_user_syscall:
 	 * Same as for is_kernel_syscall: increment saved MEPC by 4 to
 	 * prevent triggering the same ecall again upon exiting the ISR.
 	 */
-	lr t1, __z_arch_esf_t_mepc_OFFSET(sp)
+	lr t1, __struct_arch_esf_mepc_OFFSET(sp)
 	addi t1, t1, 4
-	sr t1, __z_arch_esf_t_mepc_OFFSET(sp)
+	sr t1, __struct_arch_esf_mepc_OFFSET(sp)
 
 	/* Restore argument registers from user stack */
-	lr a0, __z_arch_esf_t_a0_OFFSET(sp)
-	lr a1, __z_arch_esf_t_a1_OFFSET(sp)
-	lr a2, __z_arch_esf_t_a2_OFFSET(sp)
-	lr a3, __z_arch_esf_t_a3_OFFSET(sp)
-	lr a4, __z_arch_esf_t_a4_OFFSET(sp)
-	lr a5, __z_arch_esf_t_a5_OFFSET(sp)
-	lr t0, __z_arch_esf_t_t0_OFFSET(sp)
+	lr a0, __struct_arch_esf_a0_OFFSET(sp)
+	lr a1, __struct_arch_esf_a1_OFFSET(sp)
+	lr a2, __struct_arch_esf_a2_OFFSET(sp)
+	lr a3, __struct_arch_esf_a3_OFFSET(sp)
+	lr a4, __struct_arch_esf_a4_OFFSET(sp)
+	lr a5, __struct_arch_esf_a5_OFFSET(sp)
+	lr t0, __struct_arch_esf_t0_OFFSET(sp)
 #if defined(CONFIG_RISCV_ISA_RV32E)
 	/* Stack alignment for RV32E is 4 bytes */
 	addi sp, sp, -4
@@ -392,7 +571,7 @@ valid_syscall_id:
 #endif /* CONFIG_RISCV_ISA_RV32E */
 
 	/* Update a0 (return value) on the stack */
-	sr a0, __z_arch_esf_t_a0_OFFSET(sp)
+	sr a0, __struct_arch_esf_a0_OFFSET(sp)
 
 	/* Disable IRQs again before leaving */
 	csrc mstatus, MSTATUS_IEN
@@ -401,13 +580,13 @@ valid_syscall_id:
 
 is_interrupt:
 
-#ifdef CONFIG_PMP_STACK_GUARD
+#if defined(CONFIG_PMP_STACK_GUARD) && defined(CONFIG_MULTITHREADING)
 #ifdef CONFIG_USERSPACE
 	/*
 	 * If we came from userspace then we need to reconfigure the
 	 * PMP for kernel mode stack guard.
 	 */
-	lr t0, __z_arch_esf_t_mstatus_OFFSET(sp)
+	lr t0, __struct_arch_esf_mstatus_OFFSET(sp)
 	li t1, MSTATUS_MPP
 	and t0, t0, t1
 	bnez t0, 1f
@@ -442,13 +621,17 @@ is_interrupt:
 
 on_irq_stack:
 
+#ifdef CONFIG_RISCV_SOC_HAS_CUSTOM_IRQ_HANDLING
+	call __soc_handle_all_irqs
+#else
+
 #ifdef CONFIG_TRACING_ISR
 	call sys_trace_isr_enter
 #endif
 
 	/* Get IRQ causing interrupt */
 	csrr a0, mcause
-	li t0, SOC_MCAUSE_EXP_MASK
+	li t0, CONFIG_RISCV_MCAUSE_EXCEPTION_MASK
 	and a0, a0, t0
 
 	/*
@@ -475,7 +658,9 @@ on_irq_stack:
 	jalr ra, t1, 0
 
 #ifdef CONFIG_TRACING_ISR
-    call sys_trace_isr_exit
+	call sys_trace_isr_exit
+#endif
+
 #endif
 
 irq_done:
@@ -493,6 +678,8 @@ irq_done:
 #endif
 
 check_reschedule:
+
+#ifdef CONFIG_MULTITHREADING
 
 	/* Get pointer to current thread on this CPU */
 	lr a1, ___cpu_t_current_OFFSET(s0)
@@ -521,57 +708,49 @@ reschedule:
 
 z_riscv_thread_start:
 might_have_rescheduled:
-#ifdef CONFIG_SMP
-	/* reload s0 with &_current_cpu as it might have changed */
-	GET_CURRENT_CPU(s0, t0)
-#endif
+	/* reload s0 with &_current_cpu as it might have changed or be unset */
+	get_current_cpu s0
+
+#endif /* CONFIG_MULTITHREADING */
 
 no_reschedule:
 
 #ifdef CONFIG_RISCV_SOC_CONTEXT_SAVE
 	/* Restore context at SOC level */
-	addi a0, sp, __z_arch_esf_t_soc_context_OFFSET
+	addi a0, sp, __struct_arch_esf_soc_context_OFFSET
 	jal ra, __soc_restore_context
 #endif /* CONFIG_RISCV_SOC_CONTEXT_SAVE */
 
-	/* Restore MEPC register */
-	lr t0, __z_arch_esf_t_mepc_OFFSET(sp)
+#if defined(CONFIG_FPU_SHARING)
+	/* FPU handling upon exception mode exit */
+	mv a0, sp
+	call z_riscv_fpu_exit_exc
+
+	/* decrement _current->arch.exception_depth */
+	lr t0, ___cpu_t_current_OFFSET(s0)
+	lb t1, _thread_offset_to_exception_depth(t0)
+	add t1, t1, -1
+	sb t1, _thread_offset_to_exception_depth(t0)
+fp_trap_exit:
+#endif
+
+	/* Restore MEPC and MSTATUS registers */
+	lr t0, __struct_arch_esf_mepc_OFFSET(sp)
+	lr t2, __struct_arch_esf_mstatus_OFFSET(sp)
 	csrw mepc, t0
-
-	/* Restore MSTATUS register */
-	lr t2, __z_arch_esf_t_mstatus_OFFSET(sp)
-	csrrw t0, mstatus, t2
-
-#if defined(CONFIG_FPU) && defined(CONFIG_FPU_SHARING)
-	/*
-	 * Determine if we need to restore FP regs based on the previous
-	 * (before the csr above) mstatus value available in t0.
-	 */
-	li t1, MSTATUS_FS_INIT
-	and t0, t0, t1
-	beqz t0, no_fp
-
-	/* make sure FP is enabled in the restored mstatus */
-	csrs mstatus, t1
-	DO_FP_CALLER_SAVED(flr, sp)
-	j 1f
-
-no_fp:	/* make sure this is reflected in the restored mstatus */
-	csrc mstatus, t1
-1:
-#endif /* CONFIG_FPU && CONFIG_FPU_SHARING */
+	csrw mstatus, t2
 
 #ifdef CONFIG_USERSPACE
 	/*
 	 * Check if we are returning to user mode. If so then we must
-	 * set is_user_mode to true and load the scratch register with
-	 * the stack pointer to be used with the next exception to come.
+	 * set is_user_mode to true and preserve our kernel mode stack for
+	 * the next exception to come.
 	 */
 	li t1, MSTATUS_MPP
 	and t0, t2, t1
 	bnez t0, 1f
 
-#ifdef CONFIG_PMP_STACK_GUARD
+#if defined(CONFIG_PMP_STACK_GUARD) && defined(CONFIG_MULTITHREADING)
 	/* Remove kernel stack guard and Reconfigure PMP for user mode */
 	lr a0, ___cpu_t_current_OFFSET(s0)
 	call z_riscv_pmp_usermode_enable
@@ -583,24 +762,38 @@ no_fp:	/* make sure this is reflected in the restored mstatus */
 	add t0, t0, tp, %tprel_add(is_user_mode)
 	sb t1, %tprel_lo(is_user_mode)(t0)
 
-	/* load scratch reg with stack pointer for next exception entry */
-	add t0, sp, __z_arch_esf_t_SIZEOF
-	csrw mscratch, t0
+	/* preserve stack pointer for next exception entry */
+	add t0, sp, __struct_arch_esf_SIZEOF
+	sr t0, _curr_cpu_arch_user_exc_sp(s0)
+
+	j 2f
 1:
+	/*
+	 * We are returning to kernel mode. Store the stack pointer to
+	 * be re-loaded further down.
+	 */
+	addi t0, sp, __struct_arch_esf_SIZEOF
+	sr t0, __struct_arch_esf_sp_OFFSET(sp)
+2:
 #endif
 
 	/* Restore s0 (it is no longer ours) */
-	lr s0, __z_arch_esf_t_s0_OFFSET(sp)
+	lr s0, __struct_arch_esf_s0_OFFSET(sp)
 
+#ifdef CONFIG_RISCV_SOC_HAS_ISR_STACKING
+	SOC_ISR_SW_UNSTACKING
+#else
 	/* Restore caller-saved registers from thread stack */
 	DO_CALLER_SAVED(lr)
 
 #ifdef CONFIG_USERSPACE
 	/* retrieve saved stack pointer */
-	lr sp, __z_arch_esf_t_sp_OFFSET(sp)
+	lr sp, __struct_arch_esf_sp_OFFSET(sp)
 #else
 	/* remove esf from the stack */
-	addi sp, sp, __z_arch_esf_t_SIZEOF
+	addi sp, sp, __struct_arch_esf_SIZEOF
 #endif
+
+#endif /* CONFIG_RISCV_SOC_HAS_ISR_STACKING */
 
 	mret

@@ -5,8 +5,8 @@ if IPC_SERVICE_BACKEND_ICMSG_ME_INITIATOR || IPC_SERVICE_BACKEND_ICMSG_ME_FOLLOW
 
 config IPC_SERVICE_BACKEND_ICMSG_ME_SEND_BUF_SIZE
 	int "Size of sending buffer size"
-	range 1 65535
-	default 255
+	range 1 $(UINT16_MAX)
+	default $(UINT8_MAX)
 	help
 	  Size of a static buffer used for preparring data to send in sending
 	  function. If you are sure that your application never sends data
@@ -27,14 +27,5 @@ config IPC_SERVICE_BACKEND_ICMSG_ME_EP_NAME_LEN
 	help
 	  Maximal length of a string used to discover endpoints between the
 	  initiator and the follower.
-
-config IPC_SERVICE_BACKEND_ICMSG_ME_SHMEM_RESET
-	bool "Clear shared memory before initialization"
-	help
-	  Clearint TX buffer before icmsg instance initialization is needed
-	  if the memory was not cleared by hardware or other software modules.
-	  The memory content remaining from the previous run, or garbage data
-	  is going to be incorrectly interpreted by spsc and icmsg instances.
-	  This option adds performance overhead in the initialization process.
 
 endif # IPC_SERVICE_BACKEND_ICMSG_ME_INITIATOR || IPC_SERVICE_BACKEND_ICMSG_ME_FOLLOWER

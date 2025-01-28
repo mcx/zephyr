@@ -36,7 +36,7 @@
 #include <soc.h>
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(i2c_npcx_port, LOG_LEVEL_ERR);
+LOG_MODULE_REGISTER(i2c_npcx_port, CONFIG_I2C_LOG_LEVEL);
 
 #include "i2c_npcx_controller.h"
 #include "i2c-priv.h"
@@ -143,6 +143,38 @@ static int i2c_npcx_port_recover_bus(const struct device *dev)
 	return ret;
 }
 
+#ifdef CONFIG_I2C_TARGET
+static int i2c_npcx_target_register(const struct device *dev,
+				  struct i2c_target_config *target_cfg)
+{
+	const struct i2c_npcx_port_config *const config = dev->config;
+
+	if (!target_cfg) {
+		return -EINVAL;
+	}
+
+	if (config->i2c_ctrl == NULL) {
+		LOG_ERR("Cannot find i2c controller on port%02x!", config->port);
+		return -EIO;
+	}
+
+	return npcx_i2c_ctrl_target_register(config->i2c_ctrl, target_cfg, config->port);
+}
+
+static int i2c_npcx_target_unregister(const struct device *dev,
+				     struct i2c_target_config *target_cfg)
+{
+	const struct i2c_npcx_port_config *const config = dev->config;
+
+	if (config->i2c_ctrl == NULL) {
+		LOG_ERR("Cannot find i2c controller on port%02x!", config->port);
+		return -EIO;
+	}
+
+	return npcx_i2c_ctrl_target_unregister(config->i2c_ctrl, target_cfg, config->port);
+}
+#endif
+
 /* I2C driver registration */
 static int i2c_npcx_port_init(const struct device *dev)
 {
@@ -168,11 +200,18 @@ static int i2c_npcx_port_init(const struct device *dev)
 	return 0;
 }
 
-static const struct i2c_driver_api i2c_port_npcx_driver_api = {
+static DEVICE_API(i2c, i2c_port_npcx_driver_api) = {
 	.configure = i2c_npcx_port_configure,
 	.get_config = i2c_npcx_port_get_config,
 	.transfer = i2c_npcx_port_transfer,
 	.recover_bus = i2c_npcx_port_recover_bus,
+#ifdef CONFIG_I2C_TARGET
+	.target_register = i2c_npcx_target_register,
+	.target_unregister = i2c_npcx_target_unregister,
+#endif
+#ifdef CONFIG_I2C_RTIO
+	.iodev_submit = i2c_iodev_submit_fallback,
+#endif
 };
 
 /* I2C port init macro functions */
@@ -190,7 +229,7 @@ static const struct i2c_driver_api i2c_port_npcx_driver_api = {
 			    i2c_npcx_port_init,                                \
 			    NULL, NULL,                                        \
 			    &i2c_npcx_port_cfg_##inst,                         \
-			    PRE_KERNEL_1, CONFIG_I2C_INIT_PRIORITY,            \
+			    PRE_KERNEL_1, CONFIG_I2C_NPCX_PORT_INIT_PRIORITY,  \
 			    &i2c_port_npcx_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(NPCX_I2C_PORT_INIT)

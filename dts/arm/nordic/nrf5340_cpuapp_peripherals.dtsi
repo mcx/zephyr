@@ -4,22 +4,60 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/dt-bindings/regulator/nrf5x.h>
+
 dcnf: dcnf@0 {
 	compatible = "nordic,nrf-dcnf";
 	reg = <0x0 0x1000>;
 	status = "okay";
 };
 
-oscillators: oscillator@4000 {
-	compatible = "nordic,nrf-oscillators";
+oscillators: clock-controller@4000 {
+	compatible = "nordic,nrf53-oscillators";
 	reg = <0x4000 0x1000>;
-	status = "okay";
+
+	lfxo: lfxo {
+		compatible = "nordic,nrf53-lfxo";
+		#clock-cells = <0>;
+		clock-frequency = <32768>;
+	};
+
+	hfxo: hfxo {
+		compatible = "nordic,nrf53-hfxo";
+		#clock-cells = <0>;
+		clock-frequency = <DT_FREQ_M(32)>;
+	};
 };
 
 regulators: regulator@4000 {
-	compatible = "nordic,nrf-regulators";
+	compatible = "nordic,nrf53x-regulators";
 	reg = <0x4000 0x1000>;
 	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	vregmain: regulator@4704 {
+		compatible = "nordic,nrf5x-regulator";
+		reg = <0x4704 0x1>;
+		status = "okay";
+		regulator-name = "VREGMAIN";
+		regulator-initial-mode = <NRF5X_REG_MODE_LDO>;
+	};
+
+	vregradio: regulator@4904 {
+		compatible = "nordic,nrf5x-regulator";
+		reg = <0x4904 0x1>;
+		status = "okay";
+		regulator-name = "VREGRADIO";
+		regulator-initial-mode = <NRF5X_REG_MODE_LDO>;
+	};
+
+	vregh: regulator@4b00 {
+		compatible = "nordic,nrf53x-regulator-hv";
+		reg = <0x4b00 0x44>;
+		status = "disabled";
+		regulator-name = "VREGH";
+	};
 };
 
 clock: clock@5000 {
@@ -32,8 +70,27 @@ clock: clock@5000 {
 power: power@5000 {
 	compatible = "nordic,nrf-power";
 	reg = <0x5000 0x1000>;
+	ranges = <0x0 0x5000 0x1000>;
 	interrupts = <5 NRF_DEFAULT_IRQ_PRIORITY>;
 	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	gpregret1: gpregret1@51c {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "nordic,nrf-gpregret";
+		reg = <0x51c 0x1>;
+		status = "okay";
+	};
+
+	gpregret2: gpregret2@520 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "nordic,nrf-gpregret";
+		reg = <0x520 0x1>;
+		status = "okay";
+	};
 };
 
 reset: reset-controller@5000 {
@@ -58,9 +115,10 @@ i2c0: i2c@8000 {
 	#address-cells = <1>;
 	#size-cells = <0>;
 	reg = <0x8000 0x1000>;
-	clock-frequency = <I2C_BITRATE_STANDARD>;
 	interrupts = <8 NRF_DEFAULT_IRQ_PRIORITY>;
+	easydma-maxcnt-bits = <16>;
 	status = "disabled";
+	zephyr,pm-device-runtime-auto;
 };
 
 spi0: spi@8000 {
@@ -76,6 +134,7 @@ spi0: spi@8000 {
 	reg = <0x8000 0x1000>;
 	interrupts = <8 NRF_DEFAULT_IRQ_PRIORITY>;
 	max-frequency = <DT_FREQ_M(8)>;
+	easydma-maxcnt-bits = <16>;
 	status = "disabled";
 };
 
@@ -97,9 +156,10 @@ i2c1: i2c@9000 {
 	#address-cells = <1>;
 	#size-cells = <0>;
 	reg = <0x9000 0x1000>;
-	clock-frequency = <I2C_BITRATE_STANDARD>;
 	interrupts = <9 NRF_DEFAULT_IRQ_PRIORITY>;
+	easydma-maxcnt-bits = <16>;
 	status = "disabled";
+	zephyr,pm-device-runtime-auto;
 };
 
 spi1: spi@9000 {
@@ -115,6 +175,7 @@ spi1: spi@9000 {
 	reg = <0x9000 0x1000>;
 	interrupts = <9 NRF_DEFAULT_IRQ_PRIORITY>;
 	max-frequency = <DT_FREQ_M(8)>;
+	easydma-maxcnt-bits = <16>;
 	status = "disabled";
 };
 
@@ -132,6 +193,7 @@ spi4: spi@a000 {
 	reg = <0xa000 0x1000>;
 	interrupts = <10 NRF_DEFAULT_IRQ_PRIORITY>;
 	max-frequency = <DT_FREQ_M(32)>;
+	easydma-maxcnt-bits = <16>;
 	rx-delay-supported;
 	rx-delay = <2>;
 	status = "disabled";
@@ -148,9 +210,10 @@ i2c2: i2c@b000 {
 	#address-cells = <1>;
 	#size-cells = <0>;
 	reg = <0xb000 0x1000>;
-	clock-frequency = <I2C_BITRATE_STANDARD>;
 	interrupts = <11 NRF_DEFAULT_IRQ_PRIORITY>;
+	easydma-maxcnt-bits = <16>;
 	status = "disabled";
+	zephyr,pm-device-runtime-auto;
 };
 
 spi2: spi@b000 {
@@ -166,6 +229,7 @@ spi2: spi@b000 {
 	reg = <0xb000 0x1000>;
 	interrupts = <11 NRF_DEFAULT_IRQ_PRIORITY>;
 	max-frequency = <DT_FREQ_M(8)>;
+	easydma-maxcnt-bits = <16>;
 	status = "disabled";
 };
 
@@ -187,9 +251,10 @@ i2c3: i2c@c000 {
 	#address-cells = <1>;
 	#size-cells = <0>;
 	reg = <0xc000 0x1000>;
-	clock-frequency = <I2C_BITRATE_STANDARD>;
 	interrupts = <12 NRF_DEFAULT_IRQ_PRIORITY>;
+	easydma-maxcnt-bits = <16>;
 	status = "disabled";
+	zephyr,pm-device-runtime-auto;
 };
 
 spi3: spi@c000 {
@@ -205,6 +270,7 @@ spi3: spi@c000 {
 	reg = <0xc000 0x1000>;
 	interrupts = <12 NRF_DEFAULT_IRQ_PRIORITY>;
 	max-frequency = <DT_FREQ_M(8)>;
+	easydma-maxcnt-bits = <16>;
 	status = "disabled";
 };
 
@@ -228,6 +294,7 @@ timer0: timer@f000 {
 	status = "disabled";
 	reg = <0xf000 0x1000>;
 	cc-num = <6>;
+	max-bit-width = <32>;
 	interrupts = <15 NRF_DEFAULT_IRQ_PRIORITY>;
 	prescaler = <0>;
 };
@@ -237,6 +304,7 @@ timer1: timer@10000 {
 	status = "disabled";
 	reg = <0x10000 0x1000>;
 	cc-num = <6>;
+	max-bit-width = <32>;
 	interrupts = <16 NRF_DEFAULT_IRQ_PRIORITY>;
 	prescaler = <0>;
 };
@@ -246,6 +314,7 @@ timer2: timer@11000 {
 	status = "disabled";
 	reg = <0x11000 0x1000>;
 	cc-num = <6>;
+	max-bit-width = <32>;
 	interrupts = <17 NRF_DEFAULT_IRQ_PRIORITY>;
 	prescaler = <0>;
 };
@@ -255,7 +324,7 @@ rtc0: rtc@14000 {
 	reg = <0x14000 0x1000>;
 	cc-num = <4>;
 	interrupts = <20 NRF_DEFAULT_IRQ_PRIORITY>;
-	status = "okay";
+	status = "disabled";
 	clock-frequency = <32768>;
 	prescaler = <1>;
 };
@@ -265,12 +334,12 @@ rtc1: rtc@15000 {
 	reg = <0x15000 0x1000>;
 	cc-num = <4>;
 	interrupts = <21 NRF_DEFAULT_IRQ_PRIORITY>;
-	status = "okay";
+	status = "disabled";
 	clock-frequency = <32768>;
 	prescaler = <1>;
 };
 
-dppic: dppic@17000 {
+dppic0: dppic: dppic@17000 {
 	compatible = "nordic,nrf-dppic";
 	reg = <0x17000 0x1000>;
 	status = "okay";
@@ -292,16 +361,13 @@ wdt1: watchdog@19000 {
 
 comp: comparator@1a000 {
 	/*
-	 * This comparator node can be COMP or LPCOMP,
-	 * for the user to pick:
-	 * compatible = "nordic,nrf-comp" or
-	 *              "nordic,nrf-lpcomp".
+	 * Use compatible "nordic,nrf-comp" to configure as COMP
+	 * Use compatible "nordic,nrf-lpcomp" to configure as LPCOMP
 	 */
 	compatible = "nordic,nrf-comp";
 	reg = <0x1a000 0x1000>;
 	interrupts = <26 NRF_DEFAULT_IRQ_PRIORITY>;
 	status = "disabled";
-	#io-channel-cells = <1>;
 };
 
 egu0: egu@1b000 {
@@ -496,6 +562,7 @@ gpio0: gpio@842500 {
 	#gpio-cells = <2>;
 	status = "disabled";
 	port = <0>;
+	gpiote-instance = <&gpiote>;
 };
 
 gpio1: gpio@842800 {
@@ -506,6 +573,7 @@ gpio1: gpio@842800 {
 	ngpios = <16>;
 	status = "disabled";
 	port = <1>;
+	gpiote-instance = <&gpiote>;
 };
 
 ieee802154: ieee802154 {

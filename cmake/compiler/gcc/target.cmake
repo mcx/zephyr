@@ -5,45 +5,14 @@ set_ifndef(C++ g++)
 # Configures CMake for using GCC, this script is re-used by several
 # GCC-based toolchains
 
-if("${SPARSE}" STREQUAL "y")
-  # No search PATHS because we need more than cgcc in the default PATH
-  find_program(CMAKE_C_COMPILER cgcc REQUIRED)
-  message(STATUS "Found sparse: ${CMAKE_C_COMPILER}")
-
-  find_program(SPARSE_REAL_COMPILER ${CROSS_COMPILE}${CC} PATHS ${TOOLCHAIN_HOME} NO_DEFAULT_PATH REQUIRED)
-
-  # We know what REAL_CC _must_ be, so why do we ask the user to define it?  Because CMake
-  # cannot set (evil) build time env variables at configure time:
-  # https://gitlab.kitware.com/cmake/community/-/wikis/FAQ#how-can-i-get-or-set-environment-variables
-  # As of Sep. 2022, sparse/cgcc has unfortunately no --real-cc option as it should.
-  #
-  # In theory we could define REAL_CC ourselves here and fix the configure-time
-  # --print-file-name below (and maybe others). Then ask the user to define REAL_CC later
-  # at _build_ time. But in practice who would define environment variables at build time
-  # _only_?  So best to fail early and clearly here.
-  if ("$ENV{REAL_CC}" STREQUAL "")
-    message(FATAL_ERROR
-      "The only way to override its 'cc' default when cross-compiling with sparse is "
-      "unfortunately an environment variable. So you _must_ set REAL_CC at both configuration "
-      "time and build time to: ${SPARSE_REAL_COMPILER}")
-  else() # check ENV{REAL_CC}
-    file(REAL_PATH "${SPARSE_REAL_COMPILER}" real_compiler_rp)
-    file(REAL_PATH "$ENV{REAL_CC}" env_real_cc_rp)
-    cmake_path(COMPARE "${real_compiler_rp}" EQUAL "${env_real_cc_rp}" expected_env_REAL_CC)
-    if(NOT expected_env_REAL_CC)
-      message(FATAL_ERROR
-        "Unexpected environment variable REAL_CC: $ENV{REAL_CC}, must be: ${SPARSE_REAL_COMPILER}")
-    endif()
-  endif()
-else() # SPARSE
-  find_program(CMAKE_C_COMPILER ${CROSS_COMPILE}${CC} PATHS ${TOOLCHAIN_HOME} NO_DEFAULT_PATH)
-endif()
+find_package(Deprecated COMPONENTS SPARSE)
+find_program(CMAKE_C_COMPILER ${CROSS_COMPILE}${CC} PATHS ${TOOLCHAIN_HOME} NO_DEFAULT_PATH)
 
 if(${CMAKE_C_COMPILER} STREQUAL CMAKE_C_COMPILER-NOTFOUND)
   message(FATAL_ERROR "C compiler ${CROSS_COMPILE}${CC} not found - Please check your toolchain installation")
 endif()
 
-if(CONFIG_CPLUSPLUS)
+if(CONFIG_CPP)
   set(cplusplus_compiler ${CROSS_COMPILE}${C++})
 else()
   if(EXISTS ${CROSS_COMPILE}${C++})
@@ -65,7 +34,22 @@ if(NOT DEFINED NOSYSDEF_CFLAG)
   set(NOSYSDEF_CFLAG -undef)
 endif()
 
-foreach(file_name include/stddef.h include-fixed/limits.h)
+# GCC-13, does not install limits.h on include-fixed anymore
+# https://gcc.gnu.org/git/gitweb.cgi?p=gcc.git;h=be9dd80f933480
+# Add check for GCC version >= 13.1
+execute_process(
+    COMMAND ${CMAKE_C_COMPILER} -dumpfullversion
+    OUTPUT_VARIABLE temp_compiler_version
+    )
+
+if("${temp_compiler_version}" VERSION_LESS 4.3.0 OR
+    "${temp_compiler_version}" VERSION_GREATER_EQUAL 13.1.0)
+    set(fix_header_file include/limits.h)
+else()
+    set(fix_header_file include-fixed/limits.h)
+endif()
+
+foreach(file_name include/stddef.h "${fix_header_file}")
   execute_process(
     COMMAND ${CMAKE_C_COMPILER} --print-file-name=${file_name}
     OUTPUT_VARIABLE _OUTPUT
@@ -93,6 +77,8 @@ elseif("${ARCH}" STREQUAL "sparc")
   include(${CMAKE_CURRENT_LIST_DIR}/target_sparc.cmake)
 elseif("${ARCH}" STREQUAL "mips")
   include(${CMAKE_CURRENT_LIST_DIR}/target_mips.cmake)
+elseif("${ARCH}" STREQUAL "xtensa")
+  include(${CMAKE_CURRENT_LIST_DIR}/target_xtensa.cmake)
 endif()
 
 if(SYSROOT_DIR)
@@ -124,8 +110,7 @@ get_filename_component(LIBGCC_DIR ${LIBGCC_FILE_NAME} DIRECTORY)
 
 assert_exists(LIBGCC_DIR)
 
-LIST(APPEND LIB_INCLUDE_DIR "-L\"${LIBGCC_DIR}\"")
-LIST(APPEND TOOLCHAIN_LIBS gcc)
+set_linker_property(PROPERTY lib_include_dir "-L\"${LIBGCC_DIR}\"")
 
 # For CMake to be able to test if a compiler flag is supported by the
 # toolchain we need to give CMake the necessary flags to compile and

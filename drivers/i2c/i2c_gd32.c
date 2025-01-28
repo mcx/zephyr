@@ -433,9 +433,6 @@ static int i2c_gd32_transfer(const struct device *dev,
 			if (current->flags & I2C_MSG_STOP) {
 				return -EINVAL;
 			}
-		} else {
-			/* Last message flags implicitly contain I2C_MSG_STOP flag. */
-			current->flags |= I2C_MSG_STOP;
 		}
 
 		if ((current->buf == NULL) ||
@@ -504,7 +501,7 @@ static int i2c_gd32_configure(const struct device *dev,
 	I2C_CTL0(cfg->reg) &= ~I2C_CTL0_I2CEN;
 
 	(void)clock_control_get_rate(GD32_CLOCK_CONTROLLER,
-				     (clock_control_subsys_t *)&cfg->clkid,
+				     (clock_control_subsys_t)&cfg->clkid,
 				     &pclk1);
 
 	/* i2c clock frequency, us */
@@ -644,9 +641,12 @@ error:
 	return err;
 }
 
-static struct i2c_driver_api i2c_gd32_driver_api = {
+static DEVICE_API(i2c, i2c_gd32_driver_api) = {
 	.configure = i2c_gd32_configure,
 	.transfer = i2c_gd32_transfer,
+#ifdef CONFIG_I2C_RTIO
+	.iodev_submit = i2c_iodev_submit_fallback,
+#endif
 };
 
 static int i2c_gd32_init(const struct device *dev)
@@ -668,7 +668,7 @@ static int i2c_gd32_init(const struct device *dev)
 	k_sem_init(&data->sync_sem, 0, K_SEM_MAX_LIMIT);
 
 	(void)clock_control_on(GD32_CLOCK_CONTROLLER,
-			       (clock_control_subsys_t *)&cfg->clkid);
+			       (clock_control_subsys_t)&cfg->clkid);
 
 	(void)reset_line_toggle_dt(&cfg->reset);
 

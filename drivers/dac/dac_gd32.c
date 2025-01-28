@@ -20,10 +20,14 @@
 LOG_MODULE_REGISTER(dac_gd32, CONFIG_DAC_LOG_LEVEL);
 
 /**
- * GD32 DAC HAL use different DAC0 interface for 2 or 1 output channels SoCs.
- * Unify the DAC0 interface to DAC0_xx.
+ * For some gd32 series which only have 1 DAC, their HAL name may not same as others.
+ * Below definitions help to unify the HAL name.
  */
-#if DT_INST_PROP(0, num_channels) == 1
+#if defined(CONFIG_SOC_SERIES_GD32A50X)
+#define DAC_CTL_DEN0 DAC_CTL_DEN
+#define DAC0_R8DH    OUT_R8DH
+#define DAC0_R12DH   OUT_R12DH
+#elif defined(CONFIG_SOC_SERIES_GD32F3X0)
 #define DAC_CTL_DEN0 DAC_CTL_DEN
 #define DAC0_R8DH    DAC_R8DH
 #define DAC0_R12DH   DAC_R12DH
@@ -111,6 +115,11 @@ static int dac_gd32_channel_setup(const struct device *dev,
 		return -ENOTSUP;
 	}
 
+	if (channel_cfg->internal) {
+		LOG_ERR("Internal channels not supported");
+		return -ENOTSUP;
+	}
+
 	data->resolutions[dacx] = channel_cfg->resolution;
 
 	dac_gd32_disable(dacx);
@@ -135,7 +144,7 @@ static int dac_gd32_write_value(const struct device *dev,
 	return 0;
 }
 
-struct dac_driver_api dac_gd32_driver_api = {
+DEVICE_API(dac, dac_gd32_driver_api) = {
 	.channel_setup = dac_gd32_channel_setup,
 	.write_value = dac_gd32_write_value
 };
@@ -152,7 +161,7 @@ static int dac_gd32_init(const struct device *dev)
 	}
 
 	(void)clock_control_on(GD32_CLOCK_CONTROLLER,
-			       (clock_control_subsys_t *)&cfg->clkid);
+			       (clock_control_subsys_t)&cfg->clkid);
 
 	(void)reset_line_toggle_dt(&cfg->reset);
 
