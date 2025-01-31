@@ -15,7 +15,7 @@
 
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(pwm_npcx, LOG_LEVEL_ERR);
+LOG_MODULE_REGISTER(pwm_npcx, CONFIG_PWM_LOG_LEVEL);
 
 /* 16-bit period cycles/prescaler in NPCX PWM modules */
 #define NPCX_PWM_MAX_PRESCALER      (1UL << (16))
@@ -70,10 +70,11 @@ static void pwm_npcx_configure(const struct device *dev, int clk_bus)
 			NPCX_PWM_CLOCK_APB2_LFCLK);
 
 	/* Select clock source to LFCLK by flag, otherwise APB clock source */
-	if (clk_bus == NPCX_CLOCK_BUS_LFCLK)
+	if (clk_bus == NPCX_CLOCK_BUS_LFCLK) {
 		inst->PWMCTL |= BIT(NPCX_PWMCTL_CKSEL);
-	else
+	} else {
 		inst->PWMCTL &= ~BIT(NPCX_PWMCTL_CKSEL);
+	}
 }
 
 /* PWM api functions */
@@ -113,7 +114,7 @@ static int pwm_npcx_set_cycles(const struct device *dev, uint32_t channel,
 	 * maximum pwm period cycles and won't exceed it.
 	 * Then prescaler = ceil (period_cycles / pwm_max_period_cycles)
 	 */
-	prescaler = ceiling_fraction(period_cycles, NPCX_PWM_MAX_PERIOD_CYCLES);
+	prescaler = DIV_ROUND_UP(period_cycles, NPCX_PWM_MAX_PERIOD_CYCLES);
 	if (prescaler > NPCX_PWM_MAX_PRESCALER) {
 		return -EINVAL;
 	}
@@ -162,7 +163,7 @@ static int pwm_npcx_get_cycles_per_sec(const struct device *dev,
 }
 
 /* PWM driver registration */
-static const struct pwm_driver_api pwm_npcx_driver_api = {
+static DEVICE_API(pwm, pwm_npcx_driver_api) = {
 	.set_cycles = pwm_npcx_set_cycles,
 	.get_cycles_per_sec = pwm_npcx_get_cycles_per_sec
 };
@@ -189,14 +190,14 @@ static int pwm_npcx_init(const struct device *dev)
 	}
 
 	/* Turn on device clock first and get source clock freq. */
-	ret = clock_control_on(clk_dev, (clock_control_subsys_t *)
+	ret = clock_control_on(clk_dev, (clock_control_subsys_t)
 							&config->clk_cfg);
 	if (ret < 0) {
 		LOG_ERR("Turn on PWM clock fail %d", ret);
 		return ret;
 	}
 
-	ret = clock_control_get_rate(clk_dev, (clock_control_subsys_t *)
+	ret = clock_control_get_rate(clk_dev, (clock_control_subsys_t)
 			&config->clk_cfg, &data->cycles_per_sec);
 	if (ret < 0) {
 		LOG_ERR("Get PWM clock rate error %d", ret);

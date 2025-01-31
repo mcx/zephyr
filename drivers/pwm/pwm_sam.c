@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2019 Aurelien Jarno
+ * Copyright (c) 2021 Linaro Limited
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -10,7 +11,7 @@
 #include <errno.h>
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/drivers/pinctrl.h>
-#include <soc.h>
+#include <zephyr/drivers/clock_control/atmel_sam_pmc.h>
 
 #include <zephyr/logging/log.h>
 
@@ -21,10 +22,17 @@ LOG_MODULE_REGISTER(pwm_sam, CONFIG_PWM_LOG_LEVEL);
 #define PWMCHNUM_NUMBER PWMCH_NUM_NUMBER
 #endif
 
+/* The SAMV71 HALs change the name of the field, so we need to
+ * define it this way to match how the other SoC variants name it
+ */
+#if defined(CONFIG_SOC_ATMEL_SAMV71) || defined(CONFIG_SOC_ATMEL_SAMV71_REVB)
+#define PWM_CH_NUM PwmChNum
+#endif
+
 struct sam_pwm_config {
 	Pwm *regs;
+	const struct atmel_sam_pmc_config clock_cfg;
 	const struct pinctrl_dev_config *pcfg;
-	uint32_t id;
 	uint8_t prescaler;
 	uint8_t divider;
 };
@@ -96,15 +104,15 @@ static int sam_pwm_init(const struct device *dev)
 	const struct sam_pwm_config *config = dev->config;
 
 	Pwm * const pwm = config->regs;
-	uint32_t id = config->id;
 	uint8_t prescaler = config->prescaler;
 	uint8_t divider = config->divider;
 	int retval;
 
 	/* FIXME: way to validate prescaler & divider */
 
-	/* Enable the PWM peripheral */
-	soc_pmc_peripheral_enable(id);
+	/* Enable PWM clock in PMC */
+	(void)clock_control_on(SAM_DT_PMC_CONTROLLER,
+			       (clock_control_subsys_t)&config->clock_cfg);
 
 	retval = pinctrl_apply_state(config->pcfg, PINCTRL_STATE_DEFAULT);
 	if (retval < 0) {
@@ -117,7 +125,7 @@ static int sam_pwm_init(const struct device *dev)
 	return 0;
 }
 
-static const struct pwm_driver_api sam_pwm_driver_api = {
+static DEVICE_API(pwm, sam_pwm_driver_api) = {
 	.set_cycles = sam_pwm_set_cycles,
 	.get_cycles_per_sec = sam_pwm_get_cycles_per_sec,
 };
@@ -127,7 +135,7 @@ static const struct pwm_driver_api sam_pwm_driver_api = {
 	static const struct sam_pwm_config sam_pwm_config_##inst = {	\
 		.regs = (Pwm *)DT_INST_REG_ADDR(inst),			\
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(inst),		\
-		.id = DT_INST_PROP(inst, peripheral_id),		\
+		.clock_cfg = SAM_DT_INST_CLOCK_PMC_CFG(inst),		\
 		.prescaler = DT_INST_PROP(inst, prescaler),		\
 		.divider = DT_INST_PROP(inst, divider),			\
 	};								\

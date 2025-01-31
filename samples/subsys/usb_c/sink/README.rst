@@ -1,13 +1,15 @@
-.. _usb-c-sink-sample:
+.. zephyr:code-sample:: usb-c-sink
+   :name: Basic USB-C Sink
+   :relevant-api: _usbc_device_api
 
-Basic USB-C SINK
-################
+   Implement a USB-C Power Delivery application in the form of a USB-C Sink.
 
 Overview
 ********
 
-This example demonstrates how to create a USB-C Power Delivery application
-using the USB-C subsystem. The application implements a USB-C Sink device.
+This example demonstrates how to create a USB-C Power Delivery application and
+how to generate USB VIF policies in XML format using the USB-C subsystem. The
+application implements a USB-C Sink device.
 
 After the USB-C Sink device is plugged into a Power Delivery charger, it
 negotiates with the charger to provide 5V@100mA and displays all
@@ -19,8 +21,8 @@ Requirements
 ************
 The TCPC device used by the sample is specified in the devicetree
 node that's compatible with ``usb-c-connector``.
-The sample has been tested on :ref:`b_g474e_dpow1_board` and
-:ref:`stm32g081b_eval_board`. Overlay files for the two boards
+The sample has been tested on :zephyr:board:`b_g474e_dpow1` and
+:zephyr:board:`stm32g081b_eval`. Overlay files for the two boards
 are provided.
 
 Building and Running
@@ -29,7 +31,7 @@ Building and Running
 Build and flash as follows, changing ``b_g474e_dpow1`` for your board:
 
 .. zephyr-app-commands::
-   :zephyr-app: samples/subsys/usb-c/sink
+   :zephyr-app: samples/subsys/usb_c/sink
    :board: b_g474e_dpow1
    :goals: build flash
    :compact:

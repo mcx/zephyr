@@ -5,6 +5,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#ifdef CONFIG_SOC_POSIX
+#undef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L /* Required for gmtime_r */
+#endif
+
 #define DT_DRV_COMPAT microchip_mcp7940n
 
 #include <zephyr/device.h>
@@ -306,9 +311,7 @@ static int set_day_of_week(const struct device *dev, time_t *unix_time)
 	struct tm time_buffer = { 0 };
 	int rc = 0;
 
-	gmtime_r(unix_time, &time_buffer);
-
-	if (time_buffer.tm_wday != 0) {
+	if (gmtime_r(unix_time, &time_buffer) != NULL) {
 		data->registers.rtc_weekday.weekday = time_buffer.tm_wday;
 		rc = write_register(dev, REG_RTC_WDAY,
 			*((uint8_t *)(&data->registers.rtc_weekday)));
@@ -691,7 +694,7 @@ static int mcp7940n_init(const struct device *dev)
 	/* Configure alarm interrupt gpio */
 	if (cfg->int_gpios.port != NULL) {
 
-		if (!device_is_ready(cfg->int_gpios.port)) {
+		if (!gpio_is_ready_dt(&cfg->int_gpios)) {
 			LOG_ERR("Port device %s is not ready",
 				cfg->int_gpios.port->name);
 			rc = -ENODEV;
@@ -709,7 +712,7 @@ static int mcp7940n_init(const struct device *dev)
 		gpio_init_callback(&data->int_callback, mcp7940n_init_cb,
 				   BIT(cfg->int_gpios.pin));
 
-		gpio_add_callback(cfg->int_gpios.port, &data->int_callback);
+		(void)gpio_add_callback(cfg->int_gpios.port, &data->int_callback);
 
 		/* Configure interrupt polarity */
 		if ((cfg->int_gpios.dt_flags & GPIO_ACTIVE_LOW) == GPIO_ACTIVE_LOW) {
@@ -730,7 +733,7 @@ out:
 	return rc;
 }
 
-static const struct counter_driver_api mcp7940n_api = {
+static DEVICE_API(counter, mcp7940n_api) = {
 	.start = mcp7940n_counter_start,
 	.stop = mcp7940n_counter_stop,
 	.get_value = mcp7940n_counter_get_value,

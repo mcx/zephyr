@@ -19,6 +19,9 @@
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_output.h>
+#include <zephyr/sys/iterable_sections.h>
+
+#define TEST_MESSAGE "test msg"
 
 #define LOG_MODULE_NAME log_test
 LOG_MODULE_REGISTER(LOG_MODULE_NAME, LOG_LEVEL_INF);
@@ -29,7 +32,6 @@ ZTEST_BMEM uint32_t source_id;
 /* used when log_msg create in user space */
 ZTEST_BMEM uint8_t domain, level;
 ZTEST_DMEM uint32_t msg_data = 0x1234;
-ZTEST_DMEM char *test_msg_usr = "test msg";
 
 static uint8_t buf;
 static int char_out(uint8_t *data, size_t length, void *ctx)
@@ -65,6 +67,11 @@ static void process(const struct log_backend *const backend,
 {
 	uint32_t flags;
 	struct backend_cb *cb = (struct backend_cb *)backend->cb->ctx;
+
+	/* If printk message skip it. */
+	if (log_msg_get_level(&(msg->log)) == LOG_LEVEL_INTERNAL_RAW_STRING) {
+		return;
+	}
 
 	if (IS_ENABLED(CONFIG_LOG_MODE_IMMEDIATE)) {
 		cb->sync++;
@@ -327,7 +334,9 @@ ZTEST(test_log_core_additional, test_log_timestamping)
 	log_init();
 	/* deactivate all other backend */
 	STRUCT_SECTION_FOREACH(log_backend, backend) {
-		log_backend_deactivate(backend);
+		if ((backend == &backend1) || (backend == &backend2)) {
+			log_backend_deactivate(backend);
+		}
 	}
 
 	TC_PRINT("Register timestamp function\n");
@@ -400,8 +409,6 @@ ZTEST(test_log_core_additional, test_multiple_backends)
 #ifdef CONFIG_LOG_PROCESS_THREAD
 ZTEST(test_log_core_additional, test_log_thread)
 {
-	uint32_t slabs_free, used, max;
-
 	TC_PRINT("Logging buffer is configured to %d bytes\n",
 		 CONFIG_LOG_BUFFER_SIZE);
 
@@ -411,28 +418,57 @@ ZTEST(test_log_core_additional, test_log_thread)
 
 	log_setup(false);
 
-	slabs_free = log_msg_mem_get_free();
-	used = log_msg_mem_get_used();
-	max = log_msg_mem_get_max_used();
-	zassert_equal(used, 0);
+	zassert_false(log_data_pending());
 
 	LOG_INF("log info to log thread");
 	LOG_WRN("log warning to log thread");
 	LOG_ERR("log error to log thread");
 
-	zassert_equal(log_msg_mem_get_used(), 3);
-	zassert_equal(log_msg_mem_get_free(), slabs_free - 3);
-	zassert_equal(log_msg_mem_get_max_used(), max);
+	zassert_true(log_data_pending());
 
-	TC_PRINT("after log, free: %d, used: %d, max: %d\n", slabs_free, used, max);
 	/* wait 2 seconds for logging thread to handle this log message*/
 	k_sleep(K_MSEC(2000));
 	zassert_equal(3, backend1_cb.counter,
 		      "Unexpected amount of messages received by the backend.");
-	zassert_equal(log_msg_mem_get_used(), 0);
+	zassert_false(log_data_pending());
 }
 #else
 ZTEST(test_log_core_additional, test_log_thread)
+{
+	ztest_test_skip();
+}
+#endif
+
+/**
+ * @brief Process all logging activities using a dedicated thread (trigger immediate processing)
+ *
+ * @addtogroup logging
+ */
+
+#ifdef CONFIG_LOG_PROCESS_THREAD
+ZTEST(test_log_core_additional, test_log_thread_trigger)
+{
+	log_setup(false);
+
+	zassert_false(log_data_pending());
+
+	LOG_INF("log info to log thread");
+	LOG_WRN("log warning to log thread");
+	LOG_ERR("log error to log thread");
+
+	zassert_true(log_data_pending());
+
+	/* Trigger log thread to process messages as soon as possible. */
+	log_thread_trigger();
+
+	/* wait 1ms to give logging thread chance to handle these log messages. */
+	k_sleep(K_MSEC(1));
+	zassert_equal(3, backend1_cb.counter,
+		      "Unexpected amount of messages received by the backend.");
+	zassert_false(log_data_pending());
+}
+#else
+ZTEST(test_log_core_additional, test_log_thread_trigger)
 {
 	ztest_test_skip();
 }
@@ -443,7 +479,7 @@ static void call_log_generic(const char *fmt, ...)
 	va_list ap;
 
 	va_start(ap, fmt);
-	log2_generic(LOG_LEVEL_INF, fmt, ap);
+	log_generic(LOG_LEVEL_INF, fmt, ap);
 	va_end(ap);
 }
 
@@ -476,13 +512,15 @@ ZTEST(test_log_core_additional, test_log_msg_create)
 					  level, &msg_data, 0,
 					  sizeof(msg_data), NULL);
 		/* try z_log_msg_static_create() */
-		Z_LOG_MSG2_STACK_CREATE(0, domain, __log_current_const_data,
+		Z_LOG_MSG_STACK_CREATE(0, domain, __log_current_const_data,
 					level, &msg_data,
 					sizeof(msg_data), NULL);
 
-		Z_LOG_MSG2_CREATE(!IS_ENABLED(CONFIG_USERSPACE), mode,
+		Z_LOG_MSG_CREATE(!IS_ENABLED(CONFIG_USERSPACE), mode,
 			  Z_LOG_LOCAL_DOMAIN_ID, NULL,
-			  LOG_LEVEL_INTERNAL_RAW_STRING, NULL, 0, test_msg_usr);
+			  LOG_LEVEL_INF, NULL, 0, TEST_MESSAGE);
+
+		backend1_cb.total_logs = 3;
 
 		while (log_test_process()) {
 		}
@@ -500,15 +538,15 @@ ZTEST_USER(test_log_core_additional, test_log_msg_create_user)
 
 	z_log_msg_runtime_create(domain, NULL,
 				  level, &msg_data, 0,
-				  sizeof(msg_data), test_msg_usr);
+				  sizeof(msg_data), TEST_MESSAGE);
 	/* try z_log_msg_static_create() */
-	Z_LOG_MSG2_STACK_CREATE(0, domain, NULL,
+	Z_LOG_MSG_STACK_CREATE(0, domain, NULL,
 				level, &msg_data,
-				sizeof(msg_data), test_msg_usr);
+				sizeof(msg_data), TEST_MESSAGE);
 
-	Z_LOG_MSG2_CREATE(!IS_ENABLED(CONFIG_USERSPACE), mode,
+	Z_LOG_MSG_CREATE(!IS_ENABLED(CONFIG_USERSPACE), mode,
 			  Z_LOG_LOCAL_DOMAIN_ID, NULL,
-		  LOG_LEVEL_INTERNAL_RAW_STRING, NULL, 0, test_msg_usr);
+		  LOG_LEVEL_INTERNAL_RAW_STRING, NULL, 0, TEST_MESSAGE);
 
 	while (log_test_process()) {
 	}

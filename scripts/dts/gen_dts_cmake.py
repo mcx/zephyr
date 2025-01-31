@@ -48,11 +48,27 @@ from collections import defaultdict
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'python-devicetree',
                                 'src'))
 
+ESCAPE_TABLE = str.maketrans(
+    {
+        "\n": "\\n",
+        "\r": "\\r",
+        '\"': '\\"',
+        "\\": "\\\\",
+    }
+)
+
+
+def escape(value):
+    if isinstance(value, str):
+        return value.translate(ESCAPE_TABLE)
+
+    return value
+
 
 def parse_args():
     # Returns parsed command-line arguments
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--cmake-out", required=True,
                         help="path to write the CMake property file")
     parser.add_argument("--edt-pickle", required=True,
@@ -117,7 +133,7 @@ def main():
                 # Encode node's property 'item' as a CMake target property
                 # with a name like 'DT_PROP|<path>|<property>'.
                 cmake_prop = f'DT_PROP|{node.path}|{item}'
-                cmake_props.append(f'"{cmake_prop}" "{cmake_value}"')
+                cmake_props.append(f'"{cmake_prop}" "{escape(cmake_value)}"')
 
                 if item == 'compatible':
                     # compatibles is always an array

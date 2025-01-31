@@ -162,12 +162,12 @@ static int pms7003_channel_get(const struct device *dev,
 		val->val1 = drv_data->pm_10;
 		val->val2 = 0;
 	} else {
-		return -EINVAL;
+		return -ENOTSUP;
 	}
 	return 0;
 }
 
-static const struct sensor_driver_api pms7003_api = {
+static DEVICE_API(sensor, pms7003_api) = {
 	.sample_fetch = &pms7003_sample_fetch,
 	.channel_get = &pms7003_channel_get,
 };

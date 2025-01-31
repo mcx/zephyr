@@ -1,7 +1,8 @@
-.. _ipm_esp32:
+.. zephyr:code-sample:: ipm-esp32
+   :name: IPM on ESP32
+   :relevant-api: ipm_interface
 
-ESP32 Soft-IPM example
-######################
+   Implement inter-processor mailbox (IPM) between ESP32 APP and PRO CPUs.
 
 Overview
 ********
@@ -16,37 +17,42 @@ ESP32 intercore messaging has up two four channels, the 0 and 1 are
 reserved for BT and WIFI messages, and channels 2 and 3 is free to
 any application, each channel supports up to 64 bytes of data per
 message, so high level protocol is responsible to fragment larger
-messages in chunks of 64bytes.
+messages in chunks of 64 bytes.
 
 Building and Running the Zephyr Code
 ************************************
 
-The sample requires two build commands to run, first of all
-you need to build the esp32_net firmware as follows:
+Build the ESP32 IPM sample code as follows:
 
 .. zephyr-app-commands::
-   :zephyr-app: samples/drivers/ipm/ipm_esp32/ipm_esp32_net
-   :board: esp32_net
+   :zephyr-app: samples/drivers/ipm/ipm_esp32
+   :board: esp32s3_devkitm/esp32s3/procpu
+   :west-args: --sysbuild
    :goals: build
    :compact:
 
-Copy output file build/zephyr/esp32_net_firmware.c to samples/drivers/ipm/ipm_esp32/src,
-then build the main project and flash as stated earlier, and you would see the following output:
+Sample Output
+*************
+
+To check the output of this sample, run ``west espressif monitor`` or any other serial
+console program (e.g., minicom, putty, screen, etc).
 
 .. code-block:: console
 
-   *** Booting Zephyr OS build zephyr-v3.0.0-1911-g610f489c861e  ***
-   PRO_CPU is sending a fake request, waiting remote response...
-   PRO_CPU received a message from APP_CPU : APP_CPU: This is a response
-   PRO_CPU is sending a fake request, waiting remote response...
-   PRO_CPU received a message from APP_CPU : APP_CPU: This is a response
-   PRO_CPU is sending a fake request, waiting remote response...
-   PRO_CPU received a message from APP_CPU : APP_CPU: This is a response
-   PRO_CPU is sending a fake request, waiting remote response...
-   PRO_CPU received a message from APP_CPU : APP_CPU: This is a response
-   PRO_CPU is sending a fake request, waiting remote response...
-   PRO_CPU received a message from APP_CPU : APP_CPU: This is a response
-   PRO_CPU is sending a fake request, waiting remote response...
-   PRO_CPU received a message from APP_CPU : APP_CPU: This is a response
-   PRO_CPU is sending a fake request, waiting remote response...
-   PRO_CPU received a message from APP_CPU : APP_CPU: This is a response
+   *** Booting Zephyr OS build v4.0.0-rc2-61-ga24efebe15e2 ***
+   PRO_CPU is sending a request, waiting remote response...
+   PRO_CPU received a message from APP_CPU : APP_CPU uptime ticks 502
+   PRO_CPU is sending a request, waiting remote response...
+   PRO_CPU received a message from APP_CPU : APP_CPU uptime ticks 10502
+   PRO_CPU is sending a request, waiting remote response...
+   PRO_CPU received a message from APP_CPU : APP_CPU uptime ticks 20503
+   PRO_CPU is sending a request, waiting remote response...
+   PRO_CPU received a message from APP_CPU : APP_CPU uptime ticks 30504
+   PRO_CPU is sending a request, waiting remote response...
+   PRO_CPU received a message from APP_CPU : APP_CPU uptime ticks 40505
+   PRO_CPU is sending a request, waiting remote response...
+   PRO_CPU received a message from APP_CPU : APP_CPU uptime ticks 50506
+   PRO_CPU is sending a request, waiting remote response...
+   PRO_CPU received a message from APP_CPU : APP_CPU uptime ticks 60507
+   PRO_CPU is sending a request, waiting remote response...
+   PRO_CPU received a message from APP_CPU : APP_CPU uptime ticks 70508

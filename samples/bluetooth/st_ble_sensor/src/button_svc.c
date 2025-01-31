@@ -10,6 +10,7 @@
 
 #include "button_svc.h"
 
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -28,7 +29,7 @@ int button_init(gpio_callback_handler_t handler)
 {
 	int ret;
 
-	if (!device_is_ready(button.port)) {
+	if (!gpio_is_ready_dt(&button)) {
 		LOG_ERR("Error: button GPIO device %s is not ready",
 			button.port->name);
 		return -ENODEV;

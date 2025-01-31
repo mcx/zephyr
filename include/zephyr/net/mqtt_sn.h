@@ -6,15 +6,17 @@
 
 /** @file mqtt_sn.h
  *
- * @defgroup mqtt_sn_socket MQTT Client library
- * @ingroup networking
- * @{
  * @brief MQTT-SN Client Implementation
  *
  * @details
  * MQTT-SN Client's Application interface is defined in this header.
  * Targets protocol version 1.2.
  *
+ * @defgroup mqtt_sn_socket MQTT-SN Client library
+ * @since 3.3
+ * @version 0.1.0
+ * @ingroup networking
+ * @{
  */
 
 #ifndef ZEPHYR_INCLUDE_NET_MQTT_SN_H_
@@ -22,7 +24,7 @@
 
 #include <stddef.h>
 
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/types.h>
 
 #include <sys/types.h>
@@ -50,22 +52,39 @@ enum mqtt_sn_qos {
  * MQTT-SN topic types.
  */
 enum mqtt_sn_topic_type {
+	/**
+	 * Normal topic.
+	 * It allows usage of any valid UTF-8 string as a topic name.
+	 */
 	MQTT_SN_TOPIC_TYPE_NORMAL,
+	/**
+	 * Pre-defined topic.
+	 * It allows usage of a two-byte identifier representing a topic name for
+	 * which the corresponding topic name is known in advance by both the client
+	 * and the gateway/server.
+	 */
 	MQTT_SN_TOPIC_TYPE_PREDEF,
+	/**
+	 * Short topic.
+	 * It allows usage of a two-byte string as a topic name.
+	 */
 	MQTT_SN_TOPIC_TYPE_SHORT
 };
 
+/**
+ * MQTT-SN return codes.
+ */
 enum mqtt_sn_return_code {
-	MQTT_SN_CODE_ACCEPTED = 0x00, /**< Accepted */
+	MQTT_SN_CODE_ACCEPTED = 0x00,            /**< Accepted */
 	MQTT_SN_CODE_REJECTED_CONGESTION = 0x01, /**< Rejected: congestion */
-	MQTT_SN_CODE_REJECTED_TOPIC_ID = 0x02, /**< Rejected: Invalid Topic ID */
-	MQTT_SN_CODE_REJECTED_NOTSUP = 0x03, /**< Rejected: Not Supported */
+	MQTT_SN_CODE_REJECTED_TOPIC_ID = 0x02,   /**< Rejected: Invalid Topic ID */
+	MQTT_SN_CODE_REJECTED_NOTSUP = 0x03,     /**< Rejected: Not Supported */
 };
 
 /** @brief Abstracts memory buffers. */
 struct mqtt_sn_data {
 	const uint8_t *data; /**< Pointer to data. */
-	uint16_t size;	     /**< Size of data, in bytes. */
+	size_t size;         /**< Size of data, in bytes. */
 };
 
 /**
@@ -86,28 +105,35 @@ struct mqtt_sn_data {
  *
  * struct mqtt_sn_data data = MQTT_SN_DATA_BYTES(0x13, 0x37);
  */
-#define MQTT_SN_DATA_BYTES(...) \
-	((struct mqtt_sn_data) { (uint8_t[]){ __VA_ARGS__ }, sizeof((uint8_t[]){ __VA_ARGS__ })})
+#define MQTT_SN_DATA_BYTES(...)                                                                    \
+	((struct mqtt_sn_data){(uint8_t[]){__VA_ARGS__}, sizeof((uint8_t[]){__VA_ARGS__})})
 
 /**
  * Event types that can be emitted by the library.
  */
 enum mqtt_sn_evt_type {
-	MQTT_SN_EVT_CONNECTED,	  /**< Connected to a gateway */
+	MQTT_SN_EVT_CONNECTED,    /**< Connected to a gateway */
 	MQTT_SN_EVT_DISCONNECTED, /**< Disconnected */
-	MQTT_SN_EVT_ASLEEP,	  /**< Entered ASLEEP state */
-	MQTT_SN_EVT_AWAKE,	  /**< Entered AWAKE state */
-	MQTT_SN_EVT_PUBLISH,	  /**< Received a PUBLISH message */
-	MQTT_SN_EVT_PINGRESP	  /**< Received a PINGRESP */
+	MQTT_SN_EVT_ASLEEP,       /**< Entered ASLEEP state */
+	MQTT_SN_EVT_AWAKE,        /**< Entered AWAKE state */
+	MQTT_SN_EVT_PUBLISH,      /**< Received a PUBLISH message */
+	MQTT_SN_EVT_PINGRESP,     /**< Received a PINGRESP */
+	MQTT_SN_EVT_ADVERTISE,    /**< Received a ADVERTISE */
+	MQTT_SN_EVT_GWINFO,       /**< Received a GWINFO */
+	MQTT_SN_EVT_SEARCHGW      /**< Received a SEARCHGW */
 };
 
 /**
  * Event metadata.
  */
 union mqtt_sn_evt_param {
+	/** Structure holding publish event details */
 	struct {
+		/** The payload data associated with the event */
 		struct mqtt_sn_data data;
+		/** The type of topic for the event */
 		enum mqtt_sn_topic_type topic_type;
+		/** The identifier for the topic of the event */
 		uint16_t topic_id;
 	} publish;
 };
@@ -116,7 +142,9 @@ union mqtt_sn_evt_param {
  * MQTT-SN event structure to be handled by the event callback.
  */
 struct mqtt_sn_evt {
+	/** Event type */
 	enum mqtt_sn_evt_type type;
+	/** Event parameters */
 	union mqtt_sn_evt_param param;
 };
 
@@ -155,16 +183,27 @@ struct mqtt_sn_transport {
 	void (*deinit)(struct mqtt_sn_transport *transport);
 
 	/**
-	 * Will be called by the library when it wants to send a message.
+	 * @brief Will be called by the library when it wants to send a message.
+	 *
+	 * Implementations should follow sendto conventions with exceptions.
+	 * When dest_addr == NULL, message should be broadcast with addrlen being
+	 * the broadcast radius. This should also handle setting up/destroying
+	 * connections as required when the address changes.
+	 *
+	 * @return ENOERR on connection+transmission success, Negative values
+	 *		signal errors.
 	 */
-	int (*msg_send)(struct mqtt_sn_client *client, void *buf, size_t sz);
+	int (*sendto)(struct mqtt_sn_client *client, void *buf, size_t sz, const void *dest_addr,
+		      size_t addrlen);
 
 	/**
 	 * @brief Will be called by the library when it wants to receive a message.
 	 *
-	 * Implementations should follow recv conventions.
+	 * Implementations should follow recvfrom conventions with the exception
+	 * of a NULL src_addr being a broadcast message.
 	 */
-	ssize_t (*recv)(struct mqtt_sn_client *client, void *buffer, size_t length);
+	ssize_t (*recvfrom)(struct mqtt_sn_client *client, void *rx_buf, size_t rx_len,
+			    void *src_addr, size_t *addrlen);
 
 	/**
 	 * @brief Check if incoming data is available.
@@ -190,9 +229,9 @@ struct mqtt_sn_transport_udp {
 	/** Socket FD */
 	int sock;
 
-	/** Address of the gateway */
-	struct sockaddr gwaddr;
-	socklen_t gwaddrlen;
+	/** Address of broadcasts */
+	struct sockaddr bcaddr;
+	socklen_t bcaddrlen;
 };
 
 #define UDP_TRANSPORT(transport) CONTAINER_OF(transport, struct mqtt_sn_transport_udp, tp)
@@ -212,48 +251,130 @@ int mqtt_sn_transport_udp_init(struct mqtt_sn_transport_udp *udp, struct sockadd
  * Structure describing an MQTT-SN client.
  */
 struct mqtt_sn_client {
-	struct mqtt_sn_data client_id; /**< 1-23 character unique client ID */
+	/** 1-23 character unique client ID */
+	struct mqtt_sn_data client_id;
 
-	struct mqtt_sn_data will_topic; /**< Must be initialized before connecting with will=true */
-	struct mqtt_sn_data will_msg;	/**< Must be initialized before connecting with will=true */
+	/** Topic for Will message.
+	 * Must be initialized before connecting with will=true
+	 */
+	struct mqtt_sn_data will_topic;
+
+	/** Will message.
+	 * Must be initialized before connecting with will=true
+	 */
+	struct mqtt_sn_data will_msg;
+
+	/** Quality of Service for the Will message */
 	enum mqtt_sn_qos will_qos;
+
+	/** Flag indicating if the will message should be retained by the broker */
 	bool will_retain;
 
+	/** Underlying transport to be used by the client */
 	struct mqtt_sn_transport *transport;
 
+	/** Buffer for outgoing data */
 	struct net_buf_simple tx;
 
+	/** Buffer for incoming data */
 	struct net_buf_simple rx;
 
+	/** Buffer for incoming data sender address */
+	struct net_buf_simple rx_addr;
+
+	/** Event callback */
 	mqtt_sn_evt_cb_t evt_cb;
 
+	/** Message ID for the next message to be sent */
 	uint16_t next_msg_id;
+
+	/** List of pending publish messages */
 	sys_slist_t publish;
+
+	/** List of registered topics */
 	sys_slist_t topic;
 
+	/** List of found gateways */
+	sys_slist_t gateway;
+
+	/** Current state of the MQTT-SN client */
 	int state;
+
+	/** Timestamp of the last ping request */
 	int64_t last_ping;
+
+	/** Number of retries for failed ping attempts */
 	uint8_t ping_retries;
 
+	/** Timestamp of the next SEARCHGW transmission */
+	int64_t ts_searchgw;
+
+	/** Timestamp of the next GWINFO transmission */
+	int64_t ts_gwinfo;
+
+	/** Radius of the next GWINFO transmission */
+	int64_t radius_gwinfo;
+
+	/** Delayable work structure for processing MQTT-SN events */
 	struct k_work_delayable process_work;
 };
 
 /**
  * @brief Initialize a client.
+ *
+ * @param client        The MQTT-SN client to initialize.
+ * @param client_id     The ID to be used by the client.
+ * @param transport     The transport to be used by the client.
+ * @param evt_cb        The event callback function for the client.
+ * @param tx            Pointer to the transmit buffer.
+ * @param txsz          Size of the transmit buffer.
+ * @param rx            Pointer to the receive buffer.
+ * @param rxsz          Size of the receive buffer.
+ *
+ * @return 0 or a negative error code (errno.h) indicating reason of failure.
  */
 int mqtt_sn_client_init(struct mqtt_sn_client *client, const struct mqtt_sn_data *client_id,
 			struct mqtt_sn_transport *transport, mqtt_sn_evt_cb_t evt_cb, void *tx,
 			size_t txsz, void *rx, size_t rxsz);
 
 /**
- * @brief Deinitialize the client
+ * @brief Deinitialize the client.
  *
- * This removes all topics and publishes, and also deinits the transport.
+ * This removes all topics and publishes, and also de-inits the transport.
+ *
+ * @param client        The MQTT-SN client to deinitialize.
  */
 void mqtt_sn_client_deinit(struct mqtt_sn_client *client);
 
 /**
+ * @brief Manually add a Gateway, bypasing the normal search process.
+ *
+ * This function manually creates a gateway that is stored internal to the library.
+ *
+ * @param client      The MQTT-SN client to connect.
+ * @param gw_id       Single byte Gateway Identifier
+ * @param gw_addr     Address data structure to be used by the transport layer.
+ *
+ * @return 0 or a negative error code (errno.h) indicating reason of failure.
+ */
+int mqtt_sn_add_gw(struct mqtt_sn_client *client, uint8_t gw_id, struct mqtt_sn_data gw_addr);
+
+/**
+ * @brief Initiate the MQTT-SN GW Search process.
+ *
+ * @param client     The MQTT-SN client to connect.
+ * @param radius     Broadcast radius for the search message.
+ *
+ * @return 0 or a negative error code (errno.h) indicating reason of failure.
+ */
+int mqtt_sn_search(struct mqtt_sn_client *client, uint8_t radius);
+
+/**
  * @brief Connect the client.
+ *
+ * @param client            The MQTT-SN client to connect.
+ * @param will              Flag indicating if a Will message should be sent.
+ * @param clean_session     Flag indicating if a clean session should be started.
  *
  * @return 0 or a negative error code (errno.h) indicating reason of failure.
  */
@@ -262,19 +383,28 @@ int mqtt_sn_connect(struct mqtt_sn_client *client, bool will, bool clean_session
 /**
  * @brief Disconnect the client.
  *
+ * @param client            The MQTT-SN client to disconnect.
+ *
  * @return 0 or a negative error code (errno.h) indicating reason of failure.
  */
 int mqtt_sn_disconnect(struct mqtt_sn_client *client);
 
 /**
- * @brief Set the client into sleep state for the given duration (seconds).
+ * @brief Set the client into sleep state.
  *
- * @return 0 or a negative error code (errno.h) indicating reason of failure.
+ * @param client            The MQTT-SN client to be put to sleep.
+ * @param duration          Sleep duration (in seconds).
+ *
+ * @return 0 on success, negative errno code on failure.
  */
 int mqtt_sn_sleep(struct mqtt_sn_client *client, uint16_t duration);
 
 /**
  * @brief Subscribe to a given topic.
+ *
+ * @param client            The MQTT-SN client that should subscribe.
+ * @param qos               The desired quality of service for the subscription.
+ * @param topic_name        The name of the topic to subscribe to.
  *
  * @return 0 or a negative error code (errno.h) indicating reason of failure.
  */
@@ -283,6 +413,12 @@ int mqtt_sn_subscribe(struct mqtt_sn_client *client, enum mqtt_sn_qos qos,
 
 /**
  * @brief Unsubscribe from a topic.
+ *
+ * @param client            The MQTT-SN client that should unsubscribe.
+ * @param qos               The quality of service used when subscribing.
+ * @param topic_name        The name of the topic to unsubscribe from.
+ *
+ * @return 0 or a negative error code (errno.h) indicating reason of failure.
  */
 int mqtt_sn_unsubscribe(struct mqtt_sn_client *client, enum mqtt_sn_qos qos,
 			struct mqtt_sn_data *topic_name);
@@ -291,6 +427,12 @@ int mqtt_sn_unsubscribe(struct mqtt_sn_client *client, enum mqtt_sn_qos qos,
  * @brief Publish a value.
  *
  * If the topic is not yet registered with the gateway, the library takes care of it.
+ *
+ * @param client            The MQTT-SN client that should publish.
+ * @param qos               The desired quality of service for the publish.
+ * @param topic_name        The name of the topic to publish to.
+ * @param retain            Flag indicating if the message should be retained by the broker.
+ * @param data              The data to be published.
  *
  * @return 0 or a negative error code (errno.h) indicating reason of failure.
  */
@@ -303,9 +445,24 @@ int mqtt_sn_publish(struct mqtt_sn_client *client, enum mqtt_sn_qos qos,
  * Call this function periodically, or if you have good reason to believe there is any data.
  * If the client's transport struct contains a poll-function, this function is non-blocking.
  *
+ * @param client            The MQTT-SN client to check for incoming data.
+ *
  * @return 0 or a negative error code (errno.h) indicating reason of failure.
  */
 int mqtt_sn_input(struct mqtt_sn_client *client);
+
+/**
+ * @brief Get topic name by topic ID.
+ *
+ * @param[in] client The MQTT-SN client that uses this topic.
+ * @param[in] id Topic identifier.
+ * @param[out] topic_name Will be assigned to topic name.
+ *
+ * @return 0 on success, -ENOENT if topic ID doesn't exist,
+ * or -EINVAL on invalid arguments.
+ */
+int mqtt_sn_get_topic_name(struct mqtt_sn_client *client, uint16_t id,
+			   struct mqtt_sn_data *topic_name);
 
 #ifdef __cplusplus
 }

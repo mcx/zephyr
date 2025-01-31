@@ -26,7 +26,7 @@ static struct ipm_nrf_data nrfx_ipm_data;
 static void gipm_init(void);
 static void gipm_send(uint32_t id);
 
-#if IS_ENABLED(CONFIG_IPM_NRF_SINGLE_INSTANCE)
+#if defined(CONFIG_IPM_NRF_SINGLE_INSTANCE)
 
 static void nrfx_ipc_handler(uint8_t event_idx, void *p_context)
 {
@@ -96,7 +96,7 @@ static int ipm_nrf_init(const struct device *dev)
 	return 0;
 }
 
-static const struct ipm_driver_api ipm_nrf_driver_api = {
+static DEVICE_API(ipm, ipm_nrf_driver_api) = {
 	.send = ipm_nrf_send,
 	.register_callback = ipm_nrf_register_callback,
 	.max_data_size_get = ipm_nrf_max_data_size_get,
@@ -208,7 +208,7 @@ static int vipm_nrf_##_idx##_set_enabled(const struct device *dev, int enable)\
 	return 0;							\
 }									\
 									\
-static const struct ipm_driver_api vipm_nrf_##_idx##_driver_api = {	\
+static DEVICE_API(ipm, vipm_nrf_##_idx##_driver_api) = {	\
 	.send = vipm_nrf_##_idx##_send,					\
 	.register_callback = vipm_nrf_##_idx##_register_callback,	\
 	.max_data_size_get = vipm_nrf_max_data_size_get,		\
@@ -231,7 +231,7 @@ LISTIFY(NRFX_IPC_ID_MAX_VALUE, VIPM_DEVICE, (;), _);
 static void gipm_init(void)
 {
 	/* Init IPC */
-#if IS_ENABLED(CONFIG_IPM_NRF_SINGLE_INSTANCE)
+#if defined(CONFIG_IPM_NRF_SINGLE_INSTANCE)
 	nrfx_ipc_init(0, nrfx_ipc_handler, (void *)&nrfx_ipm_data);
 #else
 	nrfx_ipc_init(0, vipm_dispatcher, (void *)&nrfx_ipm_data);

@@ -196,7 +196,7 @@ static int gpio_dw_pin_interrupt_configure(const struct device *port,
 		}
 
 		/* Interrupt to be enabled but pin is not set to input */
-		dir_reg = dw_read(port_base_addr, dir_port) & BIT(pin);
+		dir_reg = dw_read(base_addr, dir_port) & BIT(pin);
 		if (dir_reg != 0U) {
 			return -EINVAL;
 		}
@@ -244,6 +244,9 @@ static inline void dw_pin_config(const struct device *port,
 
 	/* Set init value then direction */
 	pin_is_output = (flags & GPIO_OUTPUT) != 0U;
+
+	dw_set_bit(base_addr, dir_port, pin, pin_is_output);
+
 	if (pin_is_output) {
 		if ((flags & GPIO_OUTPUT_INIT_HIGH) != 0U) {
 			gpio_dw_port_set_bits_raw(port, BIT(pin));
@@ -251,8 +254,6 @@ static inline void dw_pin_config(const struct device *port,
 			gpio_dw_port_clear_bits_raw(port, BIT(pin));
 		}
 	}
-
-	dw_set_bit(port_base_addr, dir_port, pin, pin_is_output);
 
 	/* Use built-in debounce.
 	 * Note debounce circuit is only available if also supporting
@@ -383,6 +384,7 @@ static inline int gpio_dw_manage_callback(const struct device *port,
 	return gpio_manage_callback(&context->callbacks, callback, set);
 }
 
+#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(interrupts)
 static void gpio_dw_isr(const struct device *port)
 {
 	struct gpio_dw_runtime *context = port->data;
@@ -395,8 +397,9 @@ static void gpio_dw_isr(const struct device *port)
 
 	gpio_fire_callbacks(&context->callbacks, port, int_status);
 }
+#endif /* DT_ANY_INST_HAS_PROP_STATUS_OKAY(interrupts) */
 
-static const struct gpio_driver_api api_funcs = {
+static DEVICE_API(gpio, api_funcs) = {
 	.pin_configure = gpio_dw_config,
 	.port_get_raw = gpio_dw_port_get_raw,
 	.port_set_masked_raw = gpio_dw_port_set_masked_raw,
@@ -436,10 +439,10 @@ static int gpio_dw_initialize(const struct device *port)
 	COND_CODE_1(DT_INST_IRQ_HAS_CELL(n, flags), (DT_INST_IRQ(n, flags)), (0))
 
 #define GPIO_CFG_IRQ(idx, n)									\
-		IRQ_CONNECT(DT_INST_IRQ_BY_IDX(n, idx, irq),					\
+		IRQ_CONNECT(DT_INST_IRQN_BY_IDX(n, idx),					\
 			    DT_INST_IRQ(n, priority), gpio_dw_isr,				\
 			    DEVICE_DT_INST_GET(n), INST_IRQ_FLAGS(n));				\
-		irq_enable(DT_INST_IRQ_BY_IDX(n, idx, irq));					\
+		irq_enable(DT_INST_IRQN_BY_IDX(n, idx));					\
 
 #define GPIO_DW_INIT(n)										\
 	static void gpio_config_##n##_irq(const struct device *port)				\

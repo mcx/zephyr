@@ -9,6 +9,20 @@
 #include <zephyr/sys_clock.h>
 #include <zephyr/ztest.h>
 
+void pm_state_set(enum pm_state state, uint8_t substate_id)
+{
+	ARG_UNUSED(substate_id);
+	ARG_UNUSED(state);
+}
+
+void pm_state_exit_post_ops(enum pm_state state, uint8_t substate_id)
+{
+	ARG_UNUSED(state);
+	ARG_UNUSED(substate_id);
+
+	irq_unlock(0);
+}
+
 #ifdef CONFIG_PM_POLICY_DEFAULT
 /**
  * @brief Test the behavior of pm_policy_next_state() when
@@ -289,5 +303,37 @@ ZTEST(policy_api, test_pm_policy_next_state_custom)
 	ztest_test_skip();
 }
 #endif /* CONFIG_PM_POLICY_CUSTOM */
+
+ZTEST(policy_api, test_pm_policy_events)
+{
+	struct pm_policy_event evt1;
+	struct pm_policy_event evt2;
+	int64_t now_uptime_ticks;
+	int64_t evt1_1_uptime_ticks;
+	int64_t evt1_2_uptime_ticks;
+	int64_t evt2_uptime_ticks;
+
+	now_uptime_ticks = k_uptime_ticks();
+	evt1_1_uptime_ticks = now_uptime_ticks + 100;
+	evt1_2_uptime_ticks = now_uptime_ticks + 200;
+	evt2_uptime_ticks = now_uptime_ticks + 2000;
+
+	zassert_equal(pm_policy_next_event_ticks(), -1);
+	pm_policy_event_register(&evt1, evt1_1_uptime_ticks);
+	pm_policy_event_register(&evt2, evt2_uptime_ticks);
+	zassert_within(pm_policy_next_event_ticks(), 100, 50);
+	pm_policy_event_unregister(&evt1);
+	zassert_within(pm_policy_next_event_ticks(), 2000, 50);
+	pm_policy_event_unregister(&evt2);
+	zassert_equal(pm_policy_next_event_ticks(), -1);
+	pm_policy_event_register(&evt2, evt2_uptime_ticks);
+	zassert_within(pm_policy_next_event_ticks(), 2000, 50);
+	pm_policy_event_register(&evt1, evt1_1_uptime_ticks);
+	zassert_within(pm_policy_next_event_ticks(), 100, 50);
+	pm_policy_event_update(&evt1, evt1_2_uptime_ticks);
+	zassert_within(pm_policy_next_event_ticks(), 200, 50);
+	pm_policy_event_unregister(&evt1);
+	pm_policy_event_unregister(&evt2);
+}
 
 ZTEST_SUITE(policy_api, NULL, NULL, NULL, NULL, NULL);

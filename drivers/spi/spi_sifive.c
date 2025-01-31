@@ -216,7 +216,7 @@ static int spi_sifive_transceive(const struct device *dev,
 	 * If the chip select configuration is not present, we'll ask the
 	 * SPI peripheral itself to control the CS line
 	 */
-	if (config->cs == NULL) {
+	if (!spi_cs_is_gpio(config)) {
 		hw_cs_control = true;
 	}
 
@@ -272,8 +272,11 @@ static int spi_sifive_release(const struct device *dev,
 
 /* Device Instantiation */
 
-static struct spi_driver_api spi_sifive_api = {
+static DEVICE_API(spi, spi_sifive_api) = {
 	.transceive = spi_sifive_transceive,
+#ifdef CONFIG_SPI_RTIO
+	.iodev_submit = spi_rtio_iodev_default_submit,
+#endif
 	.release = spi_sifive_release,
 };
 
@@ -289,7 +292,7 @@ static struct spi_driver_api spi_sifive_api = {
 		.f_sys = SIFIVE_PERIPHERAL_CLOCK_FREQUENCY, \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n), \
 	}; \
-	DEVICE_DT_INST_DEFINE(n, \
+	SPI_DEVICE_DT_INST_DEFINE(n, \
 			spi_sifive_init, \
 			NULL, \
 			&spi_sifive_data_##n, \

@@ -7,6 +7,24 @@
 #ifndef ZEPHYR_INCLUDE_TOOLCHAIN_XCC_H_
 #define ZEPHYR_INCLUDE_TOOLCHAIN_XCC_H_
 
+#ifndef ZEPHYR_INCLUDE_TOOLCHAIN_H_
+#error Please do not include toolchain-specific headers directly, use <zephyr/toolchain.h> instead
+#endif
+
+/*
+ * XCC does not support using deprecated attribute in enum,
+ * so just nullify it here to avoid compilation errors.
+ */
+#define __deprecated
+
+#define __in_section_unique(seg) \
+	__attribute__((section("." STRINGIFY(seg) "." STRINGIFY(__COUNTER__))))
+
+#define __in_section_unique_named(seg, name) \
+	__attribute__((section("." STRINGIFY(seg) \
+			       "." STRINGIFY(__COUNTER__) \
+			       "." STRINGIFY(name))))
+
 /* toolchain/gcc.h errors out if __BYTE_ORDER__ cannot be determined
  * there. However, __BYTE_ORDER__ is actually being defined later in
  * this file. So define __BYTE_ORDER__ to skip the check in gcc.h
@@ -18,7 +36,11 @@
 #define __BYTE_ORDER__
 #endif
 
+#ifdef __clang__
+#include <zephyr/toolchain/llvm.h>
+#else
 #include <zephyr/toolchain/gcc.h>
+#endif
 
 #ifndef __clang__
 #undef __BYTE_ORDER__
@@ -113,16 +135,6 @@
 #define __COUNTER__ __LINE__
 #endif
 
-#undef __in_section_unique
-#define __in_section_unique(seg) \
-	__attribute__((section("." STRINGIFY(seg) "." STRINGIFY(__COUNTER__))))
-
-#undef __in_section_unique_named
-#define __in_section_unique_named(seg, name) \
-	__attribute__((section("." STRINGIFY(seg) \
-			       "." STRINGIFY(__COUNTER__) \
-			       "." STRINGIFY(name))))
-
 #ifndef __GCC_LINKER_CMD__
 #include <xtensa/config/core.h>
 
@@ -146,14 +158,5 @@
 /* Not a full barrier, just a SW barrier */
 #define __sync_synchronize() do { __asm__ __volatile__ ("" ::: "memory"); } \
 	while (false)
-
-#ifdef __deprecated
-/*
- * XCC does not support using deprecated attribute in enum,
- * so just nullify it here to avoid compilation errors.
- */
-#undef __deprecated
-#define __deprecated
-#endif
 
 #endif

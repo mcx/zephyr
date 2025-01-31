@@ -29,13 +29,17 @@ LOG_MODULE_REGISTER(net_mqtt_dec, CONFIG_MQTT_LOG_LEVEL);
  */
 static int unpack_uint8(struct buf_ctx *buf, uint8_t *val)
 {
-	NET_DBG(">> cur:%p, end:%p", buf->cur, buf->end);
+	uint8_t *cur = buf->cur;
+	uint8_t *end = buf->end;
 
-	if ((buf->end - buf->cur) < sizeof(uint8_t)) {
+	NET_DBG(">> cur:%p, end:%p", (void *)cur, (void *)end);
+
+	if ((end - cur) < sizeof(uint8_t)) {
 		return -EINVAL;
 	}
 
-	*val = *(buf->cur++);
+	*val = cur[0];
+	buf->cur = (cur + sizeof(uint8_t));
 
 	NET_DBG("<< val:%02x", *val);
 
@@ -55,14 +59,17 @@ static int unpack_uint8(struct buf_ctx *buf, uint8_t *val)
  */
 static int unpack_uint16(struct buf_ctx *buf, uint16_t *val)
 {
-	NET_DBG(">> cur:%p, end:%p", buf->cur, buf->end);
+	uint8_t *cur = buf->cur;
+	uint8_t *end = buf->end;
 
-	if ((buf->end - buf->cur) < sizeof(uint16_t)) {
+	NET_DBG(">> cur:%p, end:%p", (void *)cur, (void *)end);
+
+	if ((end - cur) < sizeof(uint16_t)) {
 		return -EINVAL;
 	}
 
-	*val = *(buf->cur++) << 8; /* MSB */
-	*val |= *(buf->cur++); /* LSB */
+	*val = sys_get_be16(cur);
+	buf->cur = (cur + sizeof(uint16_t));
 
 	NET_DBG("<< val:%04x", *val);
 
@@ -85,7 +92,7 @@ static int unpack_utf8_str(struct buf_ctx *buf, struct mqtt_utf8 *str)
 	uint16_t utf8_strlen;
 	int err_code;
 
-	NET_DBG(">> cur:%p, end:%p", buf->cur, buf->end);
+	NET_DBG(">> cur:%p, end:%p", (void *)buf->cur, (void *)buf->end);
 
 	err_code = unpack_uint16(buf, &utf8_strlen);
 	if (err_code != 0) {
@@ -126,7 +133,7 @@ static int unpack_utf8_str(struct buf_ctx *buf, struct mqtt_utf8 *str)
 static int unpack_data(uint32_t length, struct buf_ctx *buf,
 		       struct mqtt_binstr *str)
 {
-	NET_DBG(">> cur:%p, end:%p", buf->cur, buf->end);
+	NET_DBG(">> cur:%p, end:%p", (void *)buf->cur, (void *)buf->end);
 
 	if ((buf->end - buf->cur) < length) {
 		return -EINVAL;

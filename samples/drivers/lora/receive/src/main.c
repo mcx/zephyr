@@ -11,7 +11,7 @@
 #include <zephyr/kernel.h>
 
 #define DEFAULT_RADIO_NODE DT_ALIAS(lora0)
-BUILD_ASSERT(DT_NODE_HAS_STATUS(DEFAULT_RADIO_NODE, okay),
+BUILD_ASSERT(DT_NODE_HAS_STATUS_OKAY(DEFAULT_RADIO_NODE),
 	     "No default LoRa radio specified in DT");
 
 #define MAX_DATA_LEN 255
@@ -21,24 +21,25 @@ BUILD_ASSERT(DT_NODE_HAS_STATUS(DEFAULT_RADIO_NODE, okay),
 LOG_MODULE_REGISTER(lora_receive);
 
 void lora_receive_cb(const struct device *dev, uint8_t *data, uint16_t size,
-		     int16_t rssi, int8_t snr)
+		     int16_t rssi, int8_t snr, void *user_data)
 {
 	static int cnt;
 
 	ARG_UNUSED(dev);
 	ARG_UNUSED(size);
+	ARG_UNUSED(user_data);
 
-	LOG_INF("Received data: %s (RSSI:%ddBm, SNR:%ddBm)",
-		data, rssi, snr);
+	LOG_INF("LoRa RX RSSI: %d dBm, SNR: %d dB", rssi, snr);
+	LOG_HEXDUMP_INF(data, size, "LoRa RX payload");
 
 	/* Stop receiving after 10 packets */
 	if (++cnt == 10) {
 		LOG_INF("Stopping packet receptions");
-		lora_recv_async(dev, NULL);
+		lora_recv_async(dev, NULL, NULL);
 	}
 }
 
-void main(void)
+int main(void)
 {
 	const struct device *const lora_dev = DEVICE_DT_GET(DEFAULT_RADIO_NODE);
 	struct lora_modem_config config;
@@ -49,7 +50,7 @@ void main(void)
 
 	if (!device_is_ready(lora_dev)) {
 		LOG_ERR("%s Device not ready", lora_dev->name);
-		return;
+		return 0;
 	}
 
 	config.frequency = 865100000;
@@ -65,7 +66,7 @@ void main(void)
 	ret = lora_config(lora_dev, &config);
 	if (ret < 0) {
 		LOG_ERR("LoRa config failed");
-		return;
+		return 0;
 	}
 
 	/* Receive 4 packets synchronously */
@@ -76,15 +77,16 @@ void main(void)
 				&rssi, &snr);
 		if (len < 0) {
 			LOG_ERR("LoRa receive failed");
-			return;
+			return 0;
 		}
 
-		LOG_INF("Received data: %s (RSSI:%ddBm, SNR:%ddBm)",
-			data, rssi, snr);
+		LOG_INF("LoRa RX RSSI: %d dBm, SNR: %d dB", rssi, snr);
+		LOG_HEXDUMP_INF(data, len, "LoRa RX payload");
 	}
 
 	/* Enable asynchronous reception */
 	LOG_INF("Asynchronous reception");
-	lora_recv_async(lora_dev, lora_receive_cb);
+	lora_recv_async(lora_dev, lora_receive_cb, NULL);
 	k_sleep(K_FOREVER);
+	return 0;
 }

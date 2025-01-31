@@ -15,10 +15,13 @@ LOG_MODULE_REGISTER(net_l2_openthread, CONFIG_OPENTHREAD_L2_LOG_LEVEL);
 #include <net_private.h>
 
 #include <zephyr/init.h>
+#include <zephyr/sys/check.h>
+#include <zephyr/sys/slist.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/sys/__assert.h>
-#include <version.h>
+#include <zephyr/version.h>
 
+#include <openthread/child_supervision.h>
 #include <openthread/cli.h>
 #include <openthread/ip6.h>
 #include <openthread/link.h>
@@ -36,6 +39,12 @@ LOG_MODULE_REGISTER(net_l2_openthread, CONFIG_OPENTHREAD_L2_LOG_LEVEL);
 #include <platform-zephyr.h>
 
 #include "openthread_utils.h"
+
+#if defined(CONFIG_OPENTHREAD_NAT64_TRANSLATOR)
+#include <openthread/nat64.h>
+#endif  /* CONFIG_OPENTHREAD_NAT64_TRANSLATOR */
+
+#define PKT_IS_IPv4(_p) ((NET_IPV6_HDR(_p)->vtc & 0xf0) == 0x40)
 
 #define OT_STACK_SIZE (CONFIG_OPENTHREAD_THREAD_STACK_SIZE)
 
@@ -93,7 +102,7 @@ LOG_MODULE_REGISTER(net_l2_openthread, CONFIG_OPENTHREAD_L2_LOG_LEVEL);
 #define OT_POLL_PERIOD 0
 #endif
 
-#define PACKAGE_NAME "Zephyr"
+#define ZEPHYR_PACKAGE_NAME "Zephyr"
 #define PACKAGE_VERSION KERNEL_VERSION_STRING
 
 extern void platformShellInit(otInstance *aInstance);
@@ -151,12 +160,14 @@ static int ncp_hdlc_send(const uint8_t *buf, uint16_t len)
 	return len;
 }
 
+#ifndef CONFIG_HDLC_RCP_IF
 void otPlatRadioGetIeeeEui64(otInstance *instance, uint8_t *ieee_eui64)
 {
 	ARG_UNUSED(instance);
 
 	memcpy(ieee_eui64, ll_addr->addr, ll_addr->len);
 }
+#endif /* CONFIG_HDLC_RCP_IF */
 
 void otTaskletsSignalPending(otInstance *instance)
 {
@@ -174,6 +185,7 @@ void otSysEventSignalPending(void)
 
 static void ot_state_changed_handler(uint32_t flags, void *context)
 {
+	struct openthread_state_changed_cb *entry, *next;
 	struct openthread_context *ot_context = context;
 
 	NET_INFO("State changed! Flags: 0x%08" PRIx32 " Current role: %s",
@@ -217,8 +229,23 @@ static void ot_state_changed_handler(uint32_t flags, void *context)
 		add_ipv6_maddr_to_zephyr(ot_context);
 	}
 
+#if defined(CONFIG_OPENTHREAD_NAT64_TRANSLATOR)
+
+	if (flags & OT_CHANGED_NAT64_TRANSLATOR_STATE) {
+		NET_DBG("Nat64 translator state changed to %x",
+			otNat64GetTranslatorState(ot_context->instance));
+	}
+
+#endif /* CONFIG_OPENTHREAD_NAT64_TRANSLATOR */
+
 	if (state_changed_cb) {
 		state_changed_cb(flags, context);
+	}
+
+	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&ot_context->state_change_cbs, entry, next, node) {
+		if (entry->state_changed_cb != NULL) {
+			entry->state_changed_cb(flags, ot_context, entry->user_data);
+		}
 	}
 }
 
@@ -260,10 +287,15 @@ static void ot_receive_handler(otMessage *aMessage, void *context)
 		}
 	}
 
-	NET_DBG("Injecting Ip6 packet to Zephyr net stack");
+	NET_DBG("Injecting %s packet to Zephyr net stack",
+		PKT_IS_IPv4(pkt) ? "translated IPv4" : "Ip6");
 
 	if (IS_ENABLED(CONFIG_OPENTHREAD_L2_DEBUG_DUMP_IPV6)) {
-		net_pkt_hexdump(pkt, "Received IPv6 packet");
+		if (IS_ENABLED(CONFIG_OPENTHREAD_NAT64_TRANSLATOR) && PKT_IS_IPv4(pkt)) {
+			net_pkt_hexdump(pkt, "Received NAT64 IPv4 packet");
+		} else {
+			net_pkt_hexdump(pkt, "Received IPv6 packet");
+		}
 	}
 
 	if (!pkt_list_is_full(ot_context)) {
@@ -413,6 +445,13 @@ int openthread_start(struct openthread_context *ot_context)
 		otLinkSetPollPeriod(ot_context->instance, OT_POLL_PERIOD);
 	}
 
+	/* Configure Child Supervision and MLE Child timeouts. */
+	otChildSupervisionSetInterval(ot_context->instance,
+				      CONFIG_OPENTHREAD_CHILD_SUPERVISION_INTERVAL);
+	otChildSupervisionSetCheckTimeout(ot_context->instance,
+					  CONFIG_OPENTHREAD_CHILD_SUPERVISION_CHECK_TIMEOUT);
+	otThreadSetChildTimeout(ot_context->instance, CONFIG_OPENTHREAD_MLE_CHILD_TIMEOUT);
+
 	if (otDatasetIsCommissioned(ot_instance)) {
 		/* OpenThread already has dataset stored - skip the
 		 * configuration.
@@ -422,9 +461,8 @@ int openthread_start(struct openthread_context *ot_context)
 		/* No dataset - initiate network join procedure. */
 		NET_DBG("Starting OpenThread join procedure.");
 
-		error = otJoinerStart(ot_instance, OT_JOINER_PSKD, NULL,
-				      PACKAGE_NAME, OT_PLATFORM_INFO,
-				      PACKAGE_VERSION, NULL,
+		error = otJoinerStart(ot_instance, OT_JOINER_PSKD, NULL, ZEPHYR_PACKAGE_NAME,
+				      OT_PLATFORM_INFO, PACKAGE_VERSION, NULL,
 				      &ot_joiner_start_handler, ot_context);
 
 		if (error != OT_ERROR_NONE) {
@@ -491,11 +529,11 @@ int openthread_stop(struct openthread_context *ot_context)
 static int openthread_init(struct net_if *iface)
 {
 	struct openthread_context *ot_context = net_if_l2_data(iface);
-
 	struct k_work_queue_config q_cfg = {
 		.name = "openthread",
 		.no_yield = true,
 	};
+	otError err;
 
 	NET_DBG("openthread_init");
 
@@ -524,9 +562,31 @@ static int openthread_init(struct net_if *iface)
 		otIp6SetReceiveFilterEnabled(ot_context->instance, true);
 		otIp6SetReceiveCallback(ot_context->instance,
 					ot_receive_handler, ot_context);
-		otSetStateChangedCallback(ot_context->instance,
-					  &ot_state_changed_handler,
-					  ot_context);
+
+#if defined(CONFIG_OPENTHREAD_NAT64_TRANSLATOR)
+
+		otIp4Cidr nat64_cidr;
+
+		if (otIp4CidrFromString(CONFIG_OPENTHREAD_NAT64_CIDR, &nat64_cidr) ==
+		    OT_ERROR_NONE) {
+			if (otNat64SetIp4Cidr(openthread_get_default_instance(), &nat64_cidr) !=
+			    OT_ERROR_NONE) {
+				NET_ERR("Incorrect NAT64 CIDR");
+			}
+		} else {
+			NET_ERR("Failed to parse NAT64 CIDR");
+		}
+		otNat64SetReceiveIp4Callback(ot_context->instance, ot_receive_handler, ot_context);
+
+#endif /* CONFIG_OPENTHREAD_NAT64_TRANSLATOR */
+
+		sys_slist_init(&ot_context->state_change_cbs);
+		err = otSetStateChangedCallback(ot_context->instance,
+						&ot_state_changed_handler,
+						ot_context);
+		if (err != OT_ERROR_NONE) {
+			NET_ERR("Could not set state changed callback: %d", err);
+		}
 
 		net_mgmt_init_event_callback(
 			&ip6_addr_cb, ipv6_addr_event_handler,
@@ -553,6 +613,9 @@ void ieee802154_init(struct net_if *iface)
 		LOG_DBG("Interface auto start disabled.");
 		net_if_flag_set(iface, NET_IF_NO_AUTO_START);
 	}
+
+	net_if_flag_set(iface, NET_IF_IPV6_NO_ND);
+	net_if_flag_set(iface, NET_IF_IPV6_NO_MLD);
 
 	openthread_init(iface);
 }
@@ -610,6 +673,40 @@ struct otInstance *openthread_get_default_instance(void)
 		openthread_get_default_context();
 
 	return ot_context ? ot_context->instance : NULL;
+}
+
+int openthread_state_changed_cb_register(struct openthread_context *ot_context,
+					 struct openthread_state_changed_cb *cb)
+{
+	CHECKIF(cb == NULL || cb->state_changed_cb == NULL) {
+		return -EINVAL;
+	}
+
+	openthread_api_mutex_lock(ot_context);
+	sys_slist_append(&ot_context->state_change_cbs, &cb->node);
+	openthread_api_mutex_unlock(ot_context);
+
+	return 0;
+}
+
+int openthread_state_changed_cb_unregister(struct openthread_context *ot_context,
+					   struct openthread_state_changed_cb *cb)
+{
+	bool removed;
+
+	CHECKIF(cb == NULL) {
+		return -EINVAL;
+	}
+
+	openthread_api_mutex_lock(ot_context);
+	removed = sys_slist_find_and_remove(&ot_context->state_change_cbs, &cb->node);
+	openthread_api_mutex_unlock(ot_context);
+
+	if (!removed) {
+		return -EALREADY;
+	}
+
+	return 0;
 }
 
 void openthread_set_state_changed_cb(otStateChangedCallback cb)

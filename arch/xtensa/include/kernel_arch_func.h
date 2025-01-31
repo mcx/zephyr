@@ -13,56 +13,29 @@
 #ifndef _ASMLANGUAGE
 #include <kernel_internal.h>
 #include <string.h>
-#include <zephyr/arch/xtensa/cache.h>
-#include <zsr.h>
+#include <zephyr/cache.h>
+#include <zephyr/platform/hooks.h>
+#include <zephyr/zsr.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-extern void z_xtensa_fatal_error(unsigned int reason, const z_arch_esf_t *esf);
 
 K_KERNEL_STACK_ARRAY_DECLARE(z_interrupt_stacks, CONFIG_MP_MAX_NUM_CPUS,
 			     CONFIG_ISR_STACK_SIZE);
 
 static ALWAYS_INLINE void arch_kernel_init(void)
 {
-	_cpu_t *cpu0 = &_kernel.cpus[0];
-
-#ifdef CONFIG_KERNEL_COHERENCE
-	/* Make sure we don't have live data for unexpected cached
-	 * regions due to boot firmware
-	 */
-	z_xtensa_cache_flush_inv_all();
-
-	/* Our cache top stash location might have junk in it from a
-	 * pre-boot environment.  Must be zero or valid!
-	 */
-	XTENSA_WSR(ZSR_FLUSH_STR, 0);
-#endif
-
-	cpu0->nested = 0;
-
-	/* The asm2 scheme keeps the kernel pointer in a scratch SR
-	 * (see zsr.h for generation specifics) for easy access.  That
-	 * saves 4 bytes of immediate value to store the address when
-	 * compared to the legacy scheme.  But in SMP this record is a
-	 * per-CPU thing and having it stored in a SR already is a big
-	 * win.
-	 */
-	XTENSA_WSR(ZSR_CPU_STR, cpu0);
-
-#ifdef CONFIG_INIT_STACKS
-	memset(Z_KERNEL_STACK_BUFFER(z_interrupt_stacks[0]), 0xAA,
-	       K_KERNEL_STACK_SIZEOF(z_interrupt_stacks[0]));
-#endif
+#ifdef CONFIG_SOC_PER_CORE_INIT_HOOK
+	soc_per_core_init_hook();
+#endif /* CONFIG_SOC_PER_CORE_INIT_HOOK */
 }
 
 void xtensa_switch(void *switch_to, void **switched_from);
 
-static inline void arch_switch(void *switch_to, void **switched_from)
+static ALWAYS_INLINE void arch_switch(void *switch_to, void **switched_from)
 {
-	return xtensa_switch(switch_to, switched_from);
+	xtensa_switch(switch_to, switched_from);
 }
 
 #ifdef CONFIG_KERNEL_COHERENCE
@@ -115,7 +88,7 @@ static ALWAYS_INLINE void arch_cohere_stacks(struct k_thread *old_thread,
 	 * automatically overwritten as needed.
 	 */
 	if (curr_cpu != new_thread->arch.last_cpu) {
-		z_xtensa_cache_inv((void *)nsp, (nstack + nsz) - nsp);
+		sys_cache_data_invd_range((void *)nsp, (nstack + nsz) - nsp);
 	}
 	old_thread->arch.last_cpu = curr_cpu;
 
@@ -143,8 +116,8 @@ static ALWAYS_INLINE void arch_cohere_stacks(struct k_thread *old_thread,
 	 * to the stack top stashed in a special register.
 	 */
 	if (old_switch_handle != NULL) {
-		z_xtensa_cache_flush((void *)osp, (ostack + osz) - osp);
-		z_xtensa_cache_inv((void *)ostack, osp - ostack);
+		sys_cache_data_flush_range((void *)osp, (ostack + osz) - osp);
+		sys_cache_data_invd_range((void *)ostack, osp - ostack);
 	} else {
 		/* When in a switch, our current stack is the outbound
 		 * stack.  Flush the single line containing the stack
@@ -155,8 +128,8 @@ static ALWAYS_INLINE void arch_cohere_stacks(struct k_thread *old_thread,
 		 */
 		__asm__ volatile("mov %0, a1" : "=r"(osp));
 		osp -= 16;
-		z_xtensa_cache_flush((void *)osp, 1);
-		z_xtensa_cache_inv((void *)ostack, osp - ostack);
+		sys_cache_data_flush_range((void *)osp, 1);
+		sys_cache_data_invd_range((void *)ostack, osp - ostack);
 
 		uint32_t end = ostack + osz;
 

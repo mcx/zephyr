@@ -228,12 +228,12 @@ static int pwm_rcar_init(const struct device *dev)
 		return ret;
 	}
 
-	ret = clock_control_on(config->clock_dev, (clock_control_subsys_t *)&config->mod_clk);
+	ret = clock_control_on(config->clock_dev, (clock_control_subsys_t)&config->mod_clk);
 	if (ret < 0) {
 		return ret;
 	}
 
-	ret = clock_control_get_rate(config->clock_dev, (clock_control_subsys_t *)&config->core_clk,
+	ret = clock_control_get_rate(config->clock_dev, (clock_control_subsys_t)&config->core_clk,
 				     &data->clk_rate);
 
 	if (ret < 0) {
@@ -243,7 +243,7 @@ static int pwm_rcar_init(const struct device *dev)
 	return 0;
 }
 
-static const struct pwm_driver_api pwm_rcar_driver_api = {
+static DEVICE_API(pwm, pwm_rcar_driver_api) = {
 	.set_cycles = pwm_rcar_set_cycles,
 	.get_cycles_per_sec = pwm_rcar_get_cycles_per_sec,
 };

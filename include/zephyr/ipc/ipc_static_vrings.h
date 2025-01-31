@@ -9,7 +9,6 @@
 
 #include <zephyr/ipc/ipc_service.h>
 #include <openamp/open_amp.h>
-#include <metal/device.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,8 +24,13 @@ extern "C" {
 /** Number of used VRING buffers. */
 #define VRING_COUNT	(2)
 
-/** VRING alignment. */
-#define VRING_ALIGNMENT	CONFIG_IPC_SERVICE_STATIC_VRINGS_ALIGNMENT
+/**
+ * Memory alignment.
+ *
+ * This should take into account the cache line if the cache is enabled, otherwise
+ * it should be naturally aligned to the machine word size.
+ */
+#define MEM_ALIGNMENT	CONFIG_IPC_SERVICE_STATIC_VRINGS_MEM_ALIGNMENT
 
 /**
  * @typedef ipc_notify_cb
@@ -50,9 +54,6 @@ struct ipc_static_vrings {
 	/** SHM physmap. */
 	metal_phys_addr_t shm_physmap[1];
 
-	/** SHM device. */
-	struct metal_device shm_device;
-
 	/** SHM and addresses. */
 	uintptr_t status_reg_addr;
 
@@ -72,7 +73,7 @@ struct ipc_static_vrings {
 	size_t shm_size;
 
 	/** SHM IO region. */
-	struct metal_io_region *shm_io;
+	struct metal_io_region shm_io;
 
 	/** VRINGs */
 	struct virtio_vring_info rvrings[VRING_COUNT];

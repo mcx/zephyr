@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef SHELL_LOG_BACKEND_H__
-#define SHELL_LOG_BACKEND_H__
+#ifndef ZEPHYR_INCLUDE_SHELL_LOG_BACKEND_H_
+#define ZEPHYR_INCLUDE_SHELL_LOG_BACKEND_H_
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log_backend.h>
@@ -72,7 +72,8 @@ int z_shell_log_backend_output_func(uint8_t *data, size_t length, void *ctx);
 	LOG_OUTPUT_DEFINE(_name##_log_output, z_shell_log_backend_output_func,\
 			  _buf, _size); \
 	static struct shell_log_backend_control_block _name##_control_block; \
-	static uint32_t __aligned(Z_LOG_MSG2_ALIGNMENT) _name##_buf[128]; \
+	static uint32_t __aligned(Z_LOG_MSG_ALIGNMENT) \
+			_name##_buf[_queue_size / sizeof(uint32_t)]; \
 	const struct mpsc_pbuf_buffer_config _name##_mpsc_buffer_config = { \
 		.buf = _name##_buf, \
 		.size = ARRAY_SIZE(_name##_buf), \
@@ -123,4 +124,4 @@ bool z_shell_log_backend_process(const struct shell_log_backend *backend);
 }
 #endif
 
-#endif /* SHELL_LOG_BACKEND_H__ */
+#endif /* ZEPHYR_INCLUDE_SHELL_LOG_BACKEND_H_ */

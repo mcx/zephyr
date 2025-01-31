@@ -68,31 +68,18 @@ static const char *e1000_reg_to_string(enum e1000_reg_t r)
 	return NULL;
 }
 
-static struct net_if *get_iface(struct e1000_dev *ctx, uint16_t vlan_tag)
+static struct net_if *get_iface(struct e1000_dev *ctx)
 {
-#if defined(CONFIG_NET_VLAN)
-	struct net_if *iface;
-
-	iface = net_eth_get_vlan_iface(ctx->iface, vlan_tag);
-	if (!iface) {
-		return ctx->iface;
-	}
-
-	return iface;
-#else
-	ARG_UNUSED(vlan_tag);
-
 	return ctx->iface;
-#endif
 }
 
 static enum ethernet_hw_caps e1000_caps(const struct device *dev)
 {
 	return
-#if IS_ENABLED(CONFIG_NET_VLAN)
+#if defined(CONFIG_NET_VLAN)
 		ETHERNET_HW_VLAN |
 #endif
-#if IS_ENABLED(CONFIG_ETH_E1000_PTP_CLOCK)
+#if defined(CONFIG_ETH_E1000_PTP_CLOCK)
 		ETHERNET_PTP |
 #endif
 		ETHERNET_LINK_10BASE_T | ETHERNET_LINK_100BASE_T |
@@ -187,7 +174,6 @@ static void e1000_isr(const struct device *ddev)
 {
 	struct e1000_dev *dev = ddev->data;
 	uint32_t icr = ior32(dev, ICR); /* Cleared upon read */
-	uint16_t vlan_tag = NET_VLAN_TAG_UNSPEC;
 
 	icr &= ~(ICR_TXDW | ICR_TXQE);
 
@@ -197,31 +183,9 @@ static void e1000_isr(const struct device *ddev)
 		icr &= ~ICR_RXO;
 
 		if (pkt) {
-#if defined(CONFIG_NET_VLAN)
-			struct net_eth_hdr *hdr = NET_ETH_HDR(pkt);
-
-			if (ntohs(hdr->type) == NET_ETH_PTYPE_VLAN) {
-				struct net_eth_vlan_hdr *hdr_vlan =
-					(struct net_eth_vlan_hdr *)
-					NET_ETH_HDR(pkt);
-
-				net_pkt_set_vlan_tci(
-					pkt, ntohs(hdr_vlan->vlan.tci));
-				vlan_tag = net_pkt_vlan_tag(pkt);
-
-#if CONFIG_NET_TC_RX_COUNT > 1
-				enum net_priority prio;
-
-				prio = net_vlan2priority(
-						net_pkt_vlan_priority(pkt));
-				net_pkt_set_priority(pkt, prio);
-#endif
-			}
-#endif /* CONFIG_NET_VLAN */
-
-			net_recv_data(get_iface(dev, vlan_tag), pkt);
+			net_recv_data(get_iface(dev), pkt);
 		} else {
-			eth_stats_update_errors_rx(get_iface(dev, vlan_tag));
+			eth_stats_update_errors_rx(get_iface(dev));
 		}
 	}
 
@@ -251,8 +215,8 @@ int e1000_probe(const struct device *ddev)
 
 	/* Setup TX descriptor */
 
-	iow32(dev, TDBAL, (uint32_t) &dev->tx);
-	iow32(dev, TDBAH, 0);
+	iow32(dev, TDBAL, (uint32_t)POINTER_TO_UINT(&dev->tx));
+	iow32(dev, TDBAH, (uint32_t)((POINTER_TO_UINT(&dev->tx) >> 16) >> 16));
 	iow32(dev, TDLEN, 1*16);
 
 	iow32(dev, TDH, 0);
@@ -265,8 +229,8 @@ int e1000_probe(const struct device *ddev)
 	dev->rx.addr = POINTER_TO_INT(dev->rxb);
 	dev->rx.len = sizeof(dev->rxb);
 
-	iow32(dev, RDBAL, (uint32_t) &dev->rx);
-	iow32(dev, RDBAH, 0);
+	iow32(dev, RDBAL, (uint32_t)POINTER_TO_UINT(&dev->rx));
+	iow32(dev, RDBAH, (uint32_t)((POINTER_TO_UINT(&dev->rx) >> 16) >> 16));
 	iow32(dev, RDLEN, 1*16);
 
 	iow32(dev, RDH, 0);
@@ -289,23 +253,13 @@ BUILD_ASSERT(DT_INST_IRQN(0) != PCIE_IRQ_DETECT,
 static void e1000_iface_init(struct net_if *iface)
 {
 	struct e1000_dev *dev = net_if_get_device(iface)->data;
+	const struct e1000_config *config = net_if_get_device(iface)->config;
 
-	/* For VLAN, this value is only used to get the correct L2 driver.
-	 * The iface pointer in device context should contain the main
-	 * interface if the VLANs are enabled.
-	 */
 	if (dev->iface == NULL) {
 		dev->iface = iface;
 
 		/* Do the phy link up only once */
-		IRQ_CONNECT(DT_INST_IRQN(0),
-			DT_INST_IRQ(0, priority),
-			e1000_isr, DEVICE_DT_INST_GET(0),
-			DT_INST_IRQ(0, sense));
-
-		irq_enable(DT_INST_IRQN(0));
-		iow32(dev, CTRL, CTRL_SLU); /* Set link up */
-		iow32(dev, RCTL, RCTL_EN | RCTL_MPE);
+		config->config_func(dev);
 	}
 
 	ethernet_init(iface);
@@ -316,12 +270,6 @@ static void e1000_iface_init(struct net_if *iface)
 	LOG_DBG("done");
 }
 
-DEVICE_PCIE_INST_DECLARE(0);
-
-static struct e1000_dev e1000_dev = {
-	DEVICE_PCIE_INST_INIT(0, pcie),
-};
-
 static const struct ethernet_api e1000_api = {
 	.iface_api.init		= e1000_iface_init,
 #if defined(CONFIG_ETH_E1000_PTP_CLOCK)
@@ -331,14 +279,44 @@ static const struct ethernet_api e1000_api = {
 	.send			= e1000_send,
 };
 
-ETH_NET_DEVICE_DT_INST_DEFINE(0,
-		    e1000_probe,
-		    NULL,
-		    &e1000_dev,
-		    NULL,
-		    CONFIG_ETH_INIT_PRIORITY,
-		    &e1000_api,
-		    NET_ETH_MTU);
+#define E1000_DT_INST_IRQ_FLAGS(inst)					\
+	COND_CODE_1(DT_INST_IRQ_HAS_CELL(inst, sense),			\
+		    (DT_INST_IRQ(inst, sense)),				\
+		    (DT_INST_IRQ(inst, flags)))
+
+#define E1000_PCI_INIT(inst)						\
+	DEVICE_PCIE_INST_DECLARE(inst);					\
+									\
+	static struct e1000_dev dev_##inst = {				\
+		DEVICE_PCIE_INST_INIT(inst, pcie),			\
+	};								\
+									\
+	static void e1000_config_##inst(const struct e1000_dev *dev)	\
+	{								\
+		IRQ_CONNECT(DT_INST_IRQN(inst),				\
+			    DT_INST_IRQ(inst, priority),		\
+			    e1000_isr, DEVICE_DT_INST_GET(inst),	\
+			    E1000_DT_INST_IRQ_FLAGS(inst));		\
+									\
+		irq_enable(DT_INST_IRQN(inst));				\
+		iow32(dev, CTRL, CTRL_SLU); /* Set link up */		\
+		iow32(dev, RCTL, RCTL_EN | RCTL_MPE);			\
+	}								\
+									\
+	static const struct e1000_config config_##inst = {		\
+		.config_func = e1000_config_##inst,			\
+	};								\
+									\
+	ETH_NET_DEVICE_DT_INST_DEFINE(inst,				\
+				      e1000_probe,			\
+				      NULL,				\
+				      &dev_##inst,			\
+				      &config_##inst,			\
+				      CONFIG_ETH_INIT_PRIORITY,		\
+				      &e1000_api,			\
+				      NET_ETH_MTU);
+
+DT_INST_FOREACH_STATUS_OKAY(E1000_PCI_INIT);
 
 #if defined(CONFIG_ETH_E1000_PTP_CLOCK)
 struct ptp_context {
@@ -349,8 +327,6 @@ struct ptp_context {
 	 */
 	uint64_t clock_time;
 };
-
-static struct ptp_context ptp_e1000_context;
 
 static int ptp_clock_e1000_set(const struct device *dev,
 			       struct net_ptp_time *tm)
@@ -395,27 +371,27 @@ static int ptp_clock_e1000_rate_adjust(const struct device *dev, double ratio)
 	float val;
 
 	/* No change needed. */
-	if (ratio == 1.0f) {
+	if (ratio == 1.0) {
 		return 0;
 	}
 
 	ratio *= context->clk_ratio;
 
 	/* Limit possible ratio. */
-	if ((ratio > 1.0f + 1.0f/(2 * hw_inc)) ||
-			(ratio < 1.0f - 1.0f/(2 * hw_inc))) {
+	if ((ratio > 1.0 + 1.0/(2.0 * hw_inc)) ||
+			(ratio < 1.0 - 1.0/(2.0 * hw_inc))) {
 		return -EINVAL;
 	}
 
 	/* Save new ratio. */
 	context->clk_ratio = ratio;
 
-	if (ratio < 1.0f) {
+	if (ratio < 1.0) {
 		corr = hw_inc - 1;
-		val = 1.0f / (hw_inc * (1.0f - ratio));
-	} else if (ratio > 1.0f) {
+		val = 1.0 / (hw_inc * (1.0 - ratio));
+	} else if (ratio > 1.0) {
 		corr = hw_inc + 1;
-		val = 1.0f / (hw_inc * (ratio - 1.0f));
+		val = 1.0 / (hw_inc * (ratio - 1.0));
 	} else {
 		val = 0;
 		corr = hw_inc;
@@ -435,7 +411,7 @@ static int ptp_clock_e1000_rate_adjust(const struct device *dev, double ratio)
 	return 0;
 }
 
-static const struct ptp_clock_driver_api api = {
+static DEVICE_API(ptp_clock, api) = {
 	.set = ptp_clock_e1000_set,
 	.get = ptp_clock_e1000_get,
 	.adjust = ptp_clock_e1000_adjust,
@@ -444,20 +420,25 @@ static const struct ptp_clock_driver_api api = {
 
 static int ptp_e1000_init(const struct device *port)
 {
-	const struct device *const eth_dev = DEVICE_DT_INST_GET(0);
-	struct e1000_dev *context = eth_dev->data;
 	struct ptp_context *ptp_context = port->data;
+	struct e1000_dev *context = ptp_context->eth_context;
 
 	context->ptp_clock = port;
-	ptp_context->eth_context = context;
-
 	ptp_context->clock_time = k_ticks_to_ns_floor64(k_uptime_ticks());
 
 	return 0;
 }
 
-DEVICE_DEFINE(e1000_ptp_clock, PTP_CLOCK_NAME, ptp_e1000_init,
-	      NULL, &ptp_e1000_context, NULL, POST_KERNEL,
-	      CONFIG_APPLICATION_INIT_PRIORITY, &api);
+#define E1000_PTP_INIT(inst)						\
+	static struct ptp_context ptp_e1000_context_##inst = {		\
+		.eth_context = DEVICE_DT_INST_GET(inst)->data,		\
+	};								\
+									\
+	DEVICE_DEFINE(e1000_ptp_clock, PTP_CLOCK_NAME,			\
+		      ptp_e1000_init, NULL,				\
+		      &ptp_e1000_context_##inst, NULL, POST_KERNEL,	\
+		      CONFIG_APPLICATION_INIT_PRIORITY, &api);
+
+DT_INST_FOREACH_STATUS_OKAY(E1000_PTP_INIT);
 
 #endif /* CONFIG_ETH_E1000_PTP_CLOCK */

@@ -19,8 +19,7 @@ element for the package ``id``.
 Convenience routines are provided for converting a key value to
 and from a string type.
 
-For an example of the settings subsystem refer to
-:ref:`the sample <settings_subsys_sample>`.
+For an example of the settings subsystem refer to :zephyr:code-sample:`settings` sample.
 
 .. note::
 
@@ -31,15 +30,17 @@ Handlers
 ********
 
 Settings handlers for subtree implement a set of handler functions.
-These are registered using a call to ``settings_register()``.
+These are registered using a call to :c:func:`settings_register()` for
+dynamic handlers or defined using a call to :c:macro:`SETTINGS_STATIC_HANDLER_DEFINE()`
+for static handlers.
 
 **h_get**
     This gets called when asking for a settings element value by its name using
-    ``settings_runtime_get()`` from the runtime backend.
+    :c:func:`settings_runtime_get()` from the runtime backend.
 
 **h_set**
     This gets called when the value is loaded from persisted storage with
-    ``settings_load()``, or when using ``settings_runtime_set()`` from the
+    :c:func:`settings_load()`, or when using :c:func:`settings_runtime_set()` from the
     runtime backend.
 
 **h_commit**
@@ -50,57 +51,67 @@ These are registered using a call to ``settings_register()``.
 
 **h_export**
     This gets called to write all current settings. This happens
-    when ``settings_save()`` tries to save the settings or transfer to any
+    when :c:func:`settings_save()` tries to save the settings or transfer to any
     user-implemented back-end.
+
+Settings handlers also have a commit priority ``cprio`` that allows to prioritize
+the ``h_commit`` calls. This can be advantageous when e.g. a subsystem initializes
+a service that other ``h_commit`` calls depend on.
+
+Settings handlers ``h_commit`` routines are by default initialized with ``cprio = 0``,
+initializing a settings handler with a different priority is done using a call to
+:c:func:`settings_register_with_cprio()` for dynamic handlers or using a call to
+:c:macro:`SETTINGS_STATIC_HANDLER_DEFINE_WITH_CPRIO()` for static handlers. The
+specified ``cprio`` value is an integer where lower values mean higher priority.
 
 Backends
 ********
 
 Backends are meant to load and save data to/from setting handlers, and
 implement a set of handler functions. These are registered using a call to
-``settings_src_register()`` for backends that can load data, and/or
-``settings_dst_register()`` for backends that can save data. The current
+:c:func:`settings_src_register()` for backends that can load data, and/or
+:c:func:`settings_dst_register()` for backends that can save data. The current
 implementation allows for multiple source backends but only a single destination
 backend.
 
 **csi_load**
     This gets called when loading values from persistent storage using
-    ``settings_load()``.
+    :c:func:`settings_load()`.
 
 **csi_save**
     This gets called when saving a single setting to persistent storage using
-    ``settings_save_one()``.
+    :c:func:`settings_save_one()`.
 
 **csi_save_start**
     This gets called when starting a save of all current settings using
-    ``settings_save()``.
+    :c:func:`settings_save()` or :c:func:`settings_save_subtree()`.
 
 **csi_save_end**
     This gets called after having saved of all current settings using
-    ``settings_save()``.
+    :c:func:`settings_save()` or :c:func:`settings_save_subtree()`.
 
 Zephyr Storage Backends
 ***********************
 
 Zephyr has three storage backends: a Flash Circular Buffer
 (:kconfig:option:`CONFIG_SETTINGS_FCB`), a file in the filesystem
-(:kconfig:option:`CONFIG_SETTINGS_FS`), or non-volatile storage
+(:kconfig:option:`CONFIG_SETTINGS_FILE`), or non-volatile storage
 (:kconfig:option:`CONFIG_SETTINGS_NVS`).
 
 You can declare multiple sources for settings; settings from
-all of these are restored when ``settings_load()`` is called.
+all of these are restored when :c:func:`settings_load()` is called.
 
 There can be only one target for writing settings; this is where
-data is stored when you call ``settings_save()``, or ``settings_save_one()``.
+data is stored when you call :c:func:`settings_save()`, or :c:func:`settings_save_one()`.
 
-FCB read target is registered using ``settings_fcb_src()``, and write target
-using ``settings_fcb_dst()``. As a side-effect,  ``settings_fcb_src()``
+FCB read target is registered using :c:func:`settings_fcb_src()`, and write target
+using :c:func:`settings_fcb_dst()`. As a side-effect,  :c:func:`settings_fcb_src()`
 initializes the FCB area, so it must be called before calling
-``settings_fcb_dst()``. File read target is registered using
-``settings_file_src()``, and write target by using ``settings_file_dst()``.
+:c:func:`settings_fcb_dst()`. File read target is registered using
+:c:func:`settings_file_src()`, and write target by using :c:func:`settings_file_dst()`.
 Non-volatile storage read target is registered using
-``settings_nvs_src()``, and write target by using
-``settings_nvs_dst()``.
+:c:func:`settings_nvs_src()`, and write target by using
+:c:func:`settings_nvs_dst()`.
 
 Storage Location
 ****************
@@ -110,19 +121,19 @@ partition with label "storage" by default. A different partition can be
 selected by setting the ``zephyr,settings-partition`` property of the
 chosen node in the devicetree.
 
-The file path used by the file system backend to store settings
-is selected via the option ``CONFIG_SETTINGS_FS_FILE``.
+The file path used by the file backend to store settings is selected via the
+option :kconfig:option:`CONFIG_SETTINGS_FILE_PATH`.
 
 Loading data from persisted storage
 ***********************************
 
-A call to ``settings_load()`` uses an ``h_set`` implementation
+A call to :c:func:`settings_load()` uses an ``h_set`` implementation
 to load settings data from storage to volatile memory.
 After all data is loaded, the ``h_commit`` handler is issued,
 signalling the application that the settings were successfully
 retrieved.
 
-Technically FCB and filesystem backends may store some history of the entities.
+Technically FCB and file backends may store some history of the entities.
 This means that the newest data entity is stored after any
 older existing data entities.
 Starting with Zephyr 2.1, the back-end must filter out all old entities and
@@ -131,14 +142,14 @@ call the callback with only the newest entity.
 Storing data to persistent storage
 **********************************
 
-A call to ``settings_save_one()`` uses a backend implementation to store
-settings data to the storage medium. A call to ``settings_save()`` uses an
+A call to :c:func:`settings_save_one()` uses a backend implementation to store
+settings data to the storage medium. A call to :c:func:`settings_save()` uses an
 ``h_export`` implementation to store different data in one operation using
-``settings_save_one()``.
+:c:func:`settings_save_one()`.
 A key need to be covered by a ``h_export`` only if it is supposed to be stored
-by ``settings_save()`` call.
+by :c:func:`settings_save()` call.
 
-For both FCB and filesystem back-end only storage requests with data which
+For both FCB and file back-end only storage requests with data which
 changes most actual key's value are stored, therefore there is no need to check
 whether a value changed by the application. Such a storage mechanism implies
 that storage can contain multiple value assignments for a key , while only the
@@ -146,7 +157,7 @@ last is the current value for the key.
 
 Garbage collection
 ==================
-When storage becomes full (FCB) or consumes too much space (file system),
+When storage becomes full (FCB) or consumes too much space (file),
 the backend removes non-recent key-value pairs records and unnecessary
 key-delete records.
 
@@ -220,7 +231,7 @@ persisted storage.
 
 In this example, the ``main`` function increments ``foo_val``, and then
 persists the latest number. When the system restarts, the application calls
-``settings_load()`` while initializing, and ``foo_val`` will continue counting
+:c:func:`settings_load()` while initializing, and ``foo_val`` will continue counting
 up from where it was before restart.
 
 .. code-block:: c
@@ -263,7 +274,7 @@ up from where it was before restart.
         .h_set = foo_settings_set
     };
 
-    void main(void)
+    int main(void)
     {
         settings_subsys_init();
         settings_register(&my_conf);
@@ -286,7 +297,8 @@ handler (:kconfig:option:`CONFIG_SETTINGS_CUSTOM`).
 
 .. code-block:: c
 
-    static int settings_custom_load(struct settings_store *cs)
+    static int settings_custom_load(struct settings_store *cs,
+                                    const struct settings_load_arg *arg)
     {
         //...
     }
@@ -306,7 +318,7 @@ handler (:kconfig:option:`CONFIG_SETTINGS_CUSTOM`).
     /* custom backend node */
     static struct settings_store settings_custom_store = {
         .cs_itf = &settings_custom_itf
-    }
+    };
 
     int settings_backend_init(void)
     {
@@ -319,7 +331,7 @@ handler (:kconfig:option:`CONFIG_SETTINGS_CUSTOM`).
 API Reference
 *************
 
-The Settings subsystem APIs are provided by ``settings.h``:
+The Settings subsystem APIs are provided by :zephyr_file:`include/zephyr/settings/settings.h`.
 
 API for general settings usage
 ==============================

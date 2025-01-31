@@ -7,10 +7,6 @@
 
 
 #include "test_fat.h"
-#include <ff.h>
-
-/* FatFs work area */
-static FATFS fat_fs;
 
 /* mounting info */
 static struct fs_mount_t fatfs_mnt = {
@@ -89,6 +85,7 @@ void test_fat_unmount(void)
 
 void test_fat_mount(void)
 {
+	zassert_true(wipe_partition() == 0);
 	zassert_false(test_unmount() == TC_PASS);
 	zassert_true(test_mount_no_format() == TC_PASS);
 	zassert_true(test_mount_rd_only_no_sys() == TC_PASS);

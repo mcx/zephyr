@@ -360,7 +360,7 @@ static int apds9960_init_interrupt(const struct device *dev)
 	const struct apds9960_config *config = dev->config;
 	struct apds9960_data *drv_data = dev->data;
 
-	if (!device_is_ready(config->int_gpio.port)) {
+	if (!gpio_is_ready_dt(&config->int_gpio)) {
 		LOG_ERR("%s: device %s is not ready", dev->name,
 			config->int_gpio.port->name);
 		return -ENODEV;
@@ -466,7 +466,7 @@ static int apds9960_init(const struct device *dev)
 	return 0;
 }
 
-static const struct sensor_driver_api apds9960_driver_api = {
+static DEVICE_API(sensor, apds9960_driver_api) = {
 	.sample_fetch = &apds9960_sample_fetch,
 	.channel_get = &apds9960_channel_get,
 #ifdef CONFIG_APDS9960_TRIGGER

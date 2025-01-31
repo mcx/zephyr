@@ -13,7 +13,7 @@
  * The driver uses a uart peripheral with a baudrate of 115.2 kBd to send
  * and receive data bits and a baurade of 9.6 kBd for slave reset and
  * presence detection as suggested for normal speed operating mode in:
- * https://www.maximintegrated.com/en/design/technical-documents/tutorials/2/214.html
+ * https://www.analog.com/en/resources/technical-articles/using-a-uart-to-implement-a-1wire-bus-master.html
  * For overdrive speed communication baudrates of 1 MBd and 115.2 kBd
  * are used, respectively.
  */
@@ -70,7 +70,7 @@ static int serial_tx_rx(const struct device *dev, const uint8_t *tx_data,
 			uint8_t *rx_data, size_t len, uint32_t timeout)
 {
 	const struct w1_serial_config *cfg = dev->config;
-	uint64_t end;
+	k_timepoint_t end;
 	uint8_t dummy;
 	int ret = 0;
 
@@ -83,11 +83,11 @@ static int serial_tx_rx(const struct device *dev, const uint8_t *tx_data,
 		}
 
 		uart_poll_out(cfg->uart_dev, tx_data[i]);
-		end = sys_clock_timeout_end_calc(K_USEC(timeout));
+		end = sys_timepoint_calc(K_USEC(timeout));
 
 		do {
 			ret = uart_poll_in(cfg->uart_dev, &rx_data[i]);
-		} while (ret != 0 && end > k_uptime_ticks());
+		} while (ret != 0 && !sys_timepoint_expired(end));
 	}
 
 	return ret;
@@ -265,7 +265,7 @@ static int w1_serial_init(const struct device *dev)
 	return 0;
 }
 
-static const struct w1_driver_api w1_serial_driver_api = {
+static DEVICE_API(w1, w1_serial_driver_api) = {
 	.reset_bus = w1_serial_reset_bus,
 	.read_bit = w1_serial_read_bit,
 	.write_bit = w1_serial_write_bit,

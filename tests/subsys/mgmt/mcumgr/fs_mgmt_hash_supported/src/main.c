@@ -6,14 +6,14 @@
 
 #include <zephyr/ztest.h>
 #include <zephyr/sys/byteorder.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/net/net_ip.h>
-#include <mgmt/mgmt.h>
-#include <zephyr/mgmt/mcumgr/smp_dummy.h>
-#include <fs_mgmt/fs_mgmt.h>
+#include <zephyr/mgmt/mcumgr/mgmt/mgmt.h>
+#include <zephyr/mgmt/mcumgr/transport/smp_dummy.h>
+#include <zephyr/mgmt/mcumgr/grp/fs_mgmt/fs_mgmt.h>
 #include <zcbor_common.h>
 #include <zcbor_decode.h>
-#include <smp_internal.h>
+#include <mgmt/mcumgr/transport/smp_internal.h>
 
 #define SMP_RESPONSE_WAIT_TIME 3
 
@@ -35,7 +35,7 @@ ZTEST(fs_mgmt_hash_supported, test_supported)
 {
 	struct net_buf *nb;
 	struct hash_checksum_type expected_types[] = {
-#ifdef CONFIG_FS_MGMT_HASH_SHA256
+#ifdef CONFIG_MCUMGR_GRP_FS_HASH_SHA256
 
 		{
 			.name = "sha256",
@@ -45,7 +45,7 @@ ZTEST(fs_mgmt_hash_supported, test_supported)
 			.entries_matched = false,
 		},
 #endif
-#ifdef CONFIG_FS_MGMT_CHECKSUM_IEEE_CRC32
+#ifdef CONFIG_MCUMGR_GRP_FS_CHECKSUM_IEEE_CRC32
 		{
 			.name = "crc32",
 			.format = 0,
@@ -55,9 +55,6 @@ ZTEST(fs_mgmt_hash_supported, test_supported)
 		},
 #endif
 	};
-
-	/* Register os_mgmt mcumgr group */
-	fs_mgmt_register_group();
 
 	/* Enable dummy SMP backend and ready for usage */
 	smp_dummy_enable();
@@ -100,7 +97,7 @@ ZTEST(fs_mgmt_hash_supported, test_supported)
 
 	/* Search expected type array for this type and update details */
 	zcbor_new_decode_state(state, 10, &nb->data[sizeof(struct smp_hdr)],
-			       (nb->len - sizeof(struct smp_hdr)), 1);
+			       (nb->len - sizeof(struct smp_hdr)), 1, NULL, 0);
 
 	ok = zcbor_map_start_decode(state);
 

@@ -225,7 +225,7 @@ static void set_baud(volatile struct apbuart_regs *const regs, uint32_t baud)
 	core_clk_hz = sys_clock_hw_cycles_per_sec();
 
 	/* Calculate Baud rate generator "scaler" number */
-	scaler = (((core_clk_hz * 10) / (baud * 8)) - 5) / 10;
+	scaler = (core_clk_hz / (baud * 8)) - 1;
 
 	/* Set new baud rate by setting scaler */
 	regs->scaler = scaler;
@@ -516,7 +516,7 @@ static int apbuart_init(const struct device *dev)
 }
 
 /* Driver API defined in uart.h */
-static const struct uart_driver_api apbuart_driver_api = {
+static DEVICE_API(uart, apbuart_driver_api) = {
 	.poll_in                = apbuart_poll_in,
 	.poll_out               = apbuart_poll_out,
 	.err_check              = apbuart_err_check,

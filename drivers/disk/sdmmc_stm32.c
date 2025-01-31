@@ -12,6 +12,7 @@
 #include <zephyr/drivers/clock_control/stm32_clock_control.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/reset.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/irq.h>
 #include <soc.h>
@@ -63,22 +64,33 @@ struct sdmmc_dma_stream {
 };
 #endif
 
+#ifdef CONFIG_SDMMC_STM32_EMMC
+typedef MMC_HandleTypeDef HandleTypeDef;
+typedef HAL_MMC_CardInfoTypeDef CardInfoTypeDef;
+#else
+typedef SD_HandleTypeDef HandleTypeDef;
+typedef HAL_SD_CardInfoTypeDef CardInfoTypeDef;
+#endif
+
 struct stm32_sdmmc_priv {
 	irq_config_func_t irq_config;
 	struct k_sem thread_lock;
 	struct k_sem sync;
-	SD_HandleTypeDef hsd;
+	HandleTypeDef hsd;
 	int status;
 	struct k_work work;
 	struct gpio_callback cd_cb;
 	struct gpio_dt_spec cd;
 	struct gpio_dt_spec pe;
-	struct stm32_pclken pclken;
+	struct stm32_pclken *pclken;
 	const struct pinctrl_dev_config *pcfg;
+	const struct reset_dt_spec reset;
 
 #if STM32_SDMMC_USE_DMA
 	struct sdmmc_dma_stream dma_rx;
 	struct sdmmc_dma_stream dma_tx;
+	DMA_HandleTypeDef dma_tx_handle;
+	DMA_HandleTypeDef dma_rx_handle;
 #endif
 };
 
@@ -95,78 +107,70 @@ static void stm32_sdmmc_isr(const struct device *dev)
 {
 	struct stm32_sdmmc_priv *priv = dev->data;
 
+#ifdef CONFIG_SDMMC_STM32_EMMC
+	HAL_MMC_IRQHandler(&priv->hsd);
+#else
 	HAL_SD_IRQHandler(&priv->hsd);
+#endif
 }
 
-void HAL_SD_TxCpltCallback(SD_HandleTypeDef *hsd)
-{
-	struct stm32_sdmmc_priv *priv =
-		CONTAINER_OF(hsd, struct stm32_sdmmc_priv, hsd);
+#define DEFINE_HAL_CALLBACK(name)                                                                  \
+	void name(HandleTypeDef *hsd)                                                           \
+	{                                                                                          \
+		struct stm32_sdmmc_priv *priv = CONTAINER_OF(hsd, struct stm32_sdmmc_priv, hsd);   \
+                                                                                                   \
+		priv->status = hsd->ErrorCode;                                                     \
+                                                                                                   \
+		k_sem_give(&priv->sync);                                                           \
+	}
 
-	priv->status = hsd->ErrorCode;
-
-	k_sem_give(&priv->sync);
-}
-
-void HAL_SD_RxCpltCallback(SD_HandleTypeDef *hsd)
-{
-	struct stm32_sdmmc_priv *priv =
-		CONTAINER_OF(hsd, struct stm32_sdmmc_priv, hsd);
-
-	priv->status = hsd->ErrorCode;
-
-	k_sem_give(&priv->sync);
-}
-
-void HAL_SD_ErrorCallback(SD_HandleTypeDef *hsd)
-{
-	struct stm32_sdmmc_priv *priv =
-		CONTAINER_OF(hsd, struct stm32_sdmmc_priv, hsd);
-
-	priv->status = hsd->ErrorCode;
-
-	k_sem_give(&priv->sync);
-}
+#ifdef CONFIG_SDMMC_STM32_EMMC
+DEFINE_HAL_CALLBACK(HAL_MMC_TxCpltCallback);
+DEFINE_HAL_CALLBACK(HAL_MMC_RxCpltCallback);
+DEFINE_HAL_CALLBACK(HAL_MMC_ErrorCallback);
+#else
+DEFINE_HAL_CALLBACK(HAL_SD_TxCpltCallback);
+DEFINE_HAL_CALLBACK(HAL_SD_RxCpltCallback);
+DEFINE_HAL_CALLBACK(HAL_SD_ErrorCallback);
+#endif
 
 static int stm32_sdmmc_clock_enable(struct stm32_sdmmc_priv *priv)
 {
 	const struct device *clock;
 
-#if CONFIG_SOC_SERIES_STM32L4X
-	LL_RCC_PLLSAI1_Disable();
-	/* Configure PLLSA11 to enable 48M domain */
-	LL_RCC_PLLSAI1_ConfigDomain_48M(LL_RCC_PLLSOURCE_HSI,
-					LL_RCC_PLLM_DIV_1,
-					8, LL_RCC_PLLSAI1Q_DIV_8);
-
-	/* Enable PLLSA1 */
-	LL_RCC_PLLSAI1_Enable();
-
-	/*  Enable PLLSAI1 output mapped on 48MHz domain clock */
-	LL_RCC_PLLSAI1_EnableDomain_48M();
-
-	/* Wait for PLLSA1 ready flag */
-	while (LL_RCC_PLLSAI1_IsReady() != 1)
-		;
-
-	LL_RCC_SetSDMMCClockSource(LL_RCC_SDMMC1_CLKSOURCE_PLLSAI1);
-#endif
-
-#if defined(CONFIG_SOC_SERIES_STM32L5X) || \
-	defined(CONFIG_SOC_SERIES_STM32U5X)
-	/* By default the SDMMC clock source is set to 0 --> 48MHz, must be enabled */
-	LL_RCC_HSI48_Enable();
-	while (!LL_RCC_HSI48_IsReady()) {
-	}
-#endif /* CONFIG_SOC_SERIES_STM32L5X ||
-	* CONFIG_SOC_SERIES_STM32U5X
-	*/
+	/* HSI48 Clock is enabled through using the device tree */
 	clock = DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE);
 
+	if (DT_INST_NUM_CLOCKS(0) > 1) {
+		if (clock_control_configure(clock,
+					    (clock_control_subsys_t)&priv->pclken[1],
+					    NULL) != 0) {
+			LOG_ERR("Failed to enable SDMMC domain clock");
+			return -EIO;
+		}
+	}
+
+	if (IS_ENABLED(CONFIG_SDMMC_STM32_CLOCK_CHECK)) {
+		uint32_t sdmmc_clock_rate;
+
+		if (clock_control_get_rate(clock,
+					   (clock_control_subsys_t)&priv->pclken[1],
+					   &sdmmc_clock_rate) != 0) {
+			LOG_ERR("Failed to get SDMMC domain clock rate");
+			return -EIO;
+		}
+
+		if (sdmmc_clock_rate != MHZ(48)) {
+			LOG_ERR("SDMMC Clock is not 48MHz (%d)", sdmmc_clock_rate);
+			return -ENOTSUP;
+		}
+	}
+
 	/* Enable the APB clock for stm32_sdmmc */
-	return clock_control_on(clock, (clock_control_subsys_t *)&priv->pclken);
+	return clock_control_on(clock, (clock_control_subsys_t)&priv->pclken[0]);
 }
 
+#if !defined(CONFIG_SDMMC_STM32_EMMC)
 static int stm32_sdmmc_clock_disable(struct stm32_sdmmc_priv *priv)
 {
 	const struct device *clock;
@@ -174,8 +178,9 @@ static int stm32_sdmmc_clock_disable(struct stm32_sdmmc_priv *priv)
 	clock = DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE);
 
 	return clock_control_off(clock,
-				 (clock_control_subsys_t *)&priv->pclken);
+				 (clock_control_subsys_t)&priv->pclken);
 }
+#endif
 
 #if STM32_SDMMC_USE_DMA
 
@@ -227,31 +232,48 @@ static int stm32_sdmmc_configure_dma(DMA_HandleTypeDef *handle, struct sdmmc_dma
 
 static int stm32_sdmmc_dma_init(struct stm32_sdmmc_priv *priv)
 {
-	static DMA_HandleTypeDef dma_tx_handle;
-	static DMA_HandleTypeDef dma_rx_handle;
 	int err;
 
 	LOG_DBG("using dma");
 
-	err = stm32_sdmmc_configure_dma(&dma_tx_handle, &priv->dma_tx);
+	err = stm32_sdmmc_configure_dma(&priv->dma_tx_handle, &priv->dma_tx);
 	if (err) {
 		LOG_ERR("failed to init tx dma");
 		return err;
 	}
-	__HAL_LINKDMA(&priv->hsd, hdmatx, dma_tx_handle);
-	HAL_DMA_DeInit(&dma_tx_handle);
-	HAL_DMA_Init(&dma_tx_handle);
+	__HAL_LINKDMA(&priv->hsd, hdmatx, priv->dma_tx_handle);
+	HAL_DMA_Init(&priv->dma_tx_handle);
 
-	stm32_sdmmc_configure_dma(&dma_rx_handle, &priv->dma_rx);
+	err = stm32_sdmmc_configure_dma(&priv->dma_rx_handle, &priv->dma_rx);
 	if (err) {
 		LOG_ERR("failed to init rx dma");
 		return err;
 	}
-	__HAL_LINKDMA(&priv->hsd, hdmarx, dma_rx_handle);
-	HAL_DMA_DeInit(&dma_rx_handle);
-	HAL_DMA_Init(&dma_rx_handle);
+	__HAL_LINKDMA(&priv->hsd, hdmarx, priv->dma_rx_handle);
+	HAL_DMA_Init(&priv->dma_rx_handle);
 
 	return err;
+}
+
+static int stm32_sdmmc_dma_deinit(struct stm32_sdmmc_priv *priv)
+{
+	int ret;
+	struct sdmmc_dma_stream *dma_tx = &priv->dma_tx;
+	struct sdmmc_dma_stream *dma_rx = &priv->dma_rx;
+
+	ret = dma_stop(dma_tx->dev, dma_tx->channel);
+	HAL_DMA_DeInit(&priv->dma_tx_handle);
+	if (ret != 0) {
+		LOG_ERR("Failed to stop tx DMA transmission");
+		return ret;
+	}
+	ret = dma_stop(dma_rx->dev, dma_rx->channel);
+	HAL_DMA_DeInit(&priv->dma_rx_handle);
+	if (ret != 0) {
+		LOG_ERR("Failed to stop rx DMA transmission");
+		return ret;
+	}
+	return ret;
 }
 
 #endif
@@ -262,16 +284,16 @@ static int stm32_sdmmc_access_init(struct disk_info *disk)
 	struct stm32_sdmmc_priv *priv = dev->data;
 	int err;
 
-	if (priv->status == DISK_STATUS_OK) {
-		return 0;
-	}
-
 	if (priv->status == DISK_STATUS_NOMEDIA) {
 		return -ENODEV;
 	}
 
 #if STM32_SDMMC_USE_DMA
-	stm32_sdmmc_dma_init(priv);
+	err = stm32_sdmmc_dma_init(priv);
+	if (err) {
+		LOG_ERR("DMA init failed");
+		return err;
+	}
 #endif
 
 	err = stm32_sdmmc_clock_enable(priv);
@@ -280,7 +302,17 @@ static int stm32_sdmmc_access_init(struct disk_info *disk)
 		return err;
 	}
 
+	err = reset_line_toggle_dt(&priv->reset);
+	if (err) {
+		LOG_ERR("failed to reset peripheral");
+		return err;
+	}
+
+#ifdef CONFIG_SDMMC_STM32_EMMC
+	err = HAL_MMC_Init(&priv->hsd);
+#else
 	err = HAL_SD_Init(&priv->hsd);
+#endif
 	if (err != HAL_OK) {
 		LOG_ERR("failed to init stm32_sdmmc (ErrorCode 0x%X)", priv->hsd.ErrorCode);
 		return -EIO;
@@ -294,10 +326,31 @@ static int stm32_sdmmc_access_init(struct disk_info *disk)
 	return 0;
 }
 
-static void stm32_sdmmc_access_deinit(struct stm32_sdmmc_priv *priv)
+static int stm32_sdmmc_access_deinit(struct stm32_sdmmc_priv *priv)
 {
-	HAL_SD_DeInit(&priv->hsd);
+	int err = 0;
+
+#if STM32_SDMMC_USE_DMA
+	err = stm32_sdmmc_dma_deinit(priv);
+	if (err) {
+		LOG_ERR("DMA deinit failed");
+		return err;
+	}
+#endif
+
+#if defined(CONFIG_SDMMC_STM32_EMMC)
+	err = HAL_MMC_DeInit(&priv->hsd);
+#else
+	err = HAL_SD_DeInit(&priv->hsd);
 	stm32_sdmmc_clock_disable(priv);
+#endif
+	if (err != HAL_OK) {
+		LOG_ERR("failed to deinit stm32_sdmmc (ErrorCode 0x%X)", priv->hsd.ErrorCode);
+		return err;
+	}
+
+	priv->status = DISK_STATUS_UNINIT;
+	return 0;
 }
 
 static int stm32_sdmmc_access_status(struct disk_info *disk)
@@ -306,6 +359,37 @@ static int stm32_sdmmc_access_status(struct disk_info *disk)
 	struct stm32_sdmmc_priv *priv = dev->data;
 
 	return priv->status;
+}
+
+static int stm32_sdmmc_is_card_in_transfer(HandleTypeDef *hsd)
+{
+#ifdef CONFIG_SDMMC_STM32_EMMC
+	return HAL_MMC_GetCardState(hsd) == HAL_MMC_CARD_TRANSFER;
+#else
+	return HAL_SD_GetCardState(hsd) == HAL_SD_CARD_TRANSFER;
+#endif
+}
+
+static int stm32_sdmmc_read_blocks(HandleTypeDef *hsd, uint8_t *data_buf,
+				   uint32_t start_sector, uint32_t num_sector)
+{
+#if STM32_SDMMC_USE_DMA || IS_ENABLED(DT_PROP(DT_DRV_INST(0), idma))
+
+#ifdef CONFIG_SDMMC_STM32_EMMC
+	return HAL_MMC_ReadBlocks_DMA(hsd, data_buf, start_sector, num_sector);
+#else
+	return HAL_SD_ReadBlocks_DMA(hsd, data_buf, start_sector, num_sector);
+#endif
+
+#else
+
+#ifdef CONFIG_SDMMC_STM32_EMMC
+	return HAL_MMC_ReadBlocks_IT(hsd, data_buf, start_sector, num_sector);
+#else
+	return HAL_SD_ReadBlocks_IT(hsd, data_buf, start_sector, num_sector);
+#endif
+
+#endif
 }
 
 static int stm32_sdmmc_access_read(struct disk_info *disk, uint8_t *data_buf,
@@ -317,13 +401,7 @@ static int stm32_sdmmc_access_read(struct disk_info *disk, uint8_t *data_buf,
 
 	k_sem_take(&priv->thread_lock, K_FOREVER);
 
-#if STM32_SDMMC_USE_DMA
-	err = HAL_SD_ReadBlocks_DMA(&priv->hsd, data_buf, start_sector,
-				num_sector);
-#else
-	err = HAL_SD_ReadBlocks_IT(&priv->hsd, data_buf, start_sector,
-				num_sector);
-#endif
+	err = stm32_sdmmc_read_blocks(&priv->hsd, data_buf, start_sector, num_sector);
 	if (err != HAL_OK) {
 		LOG_ERR("sd read block failed %d", err);
 		err = -EIO;
@@ -338,12 +416,35 @@ static int stm32_sdmmc_access_read(struct disk_info *disk, uint8_t *data_buf,
 		goto end;
 	}
 
-	while (HAL_SD_GetCardState(&priv->hsd) != HAL_SD_CARD_TRANSFER) {
+	while (!stm32_sdmmc_is_card_in_transfer(&priv->hsd)) {
 	}
 
 end:
 	k_sem_give(&priv->thread_lock);
 	return err;
+}
+
+static int stm32_sdmmc_write_blocks(HandleTypeDef *hsd,
+				    uint8_t *data_buf,
+				    uint32_t start_sector, uint32_t num_sector)
+{
+#if STM32_SDMMC_USE_DMA || IS_ENABLED(DT_PROP(DT_DRV_INST(0), idma))
+
+#ifdef CONFIG_SDMMC_STM32_EMMC
+	return HAL_MMC_WriteBlocks_DMA(hsd, data_buf, start_sector, num_sector);
+#else
+	return HAL_SD_WriteBlocks_DMA(hsd, data_buf, start_sector, num_sector);
+#endif
+
+#else
+
+#ifdef CONFIG_SDMMC_STM32_EMMC
+	return HAL_MMC_WriteBlocks_IT(hsd, data_buf, start_sector, num_sector);
+#else
+	return HAL_SD_WriteBlocks_IT(hsd, data_buf, start_sector, num_sector);
+#endif
+
+#endif
 }
 
 static int stm32_sdmmc_access_write(struct disk_info *disk,
@@ -356,13 +457,7 @@ static int stm32_sdmmc_access_write(struct disk_info *disk,
 
 	k_sem_take(&priv->thread_lock, K_FOREVER);
 
-#if STM32_SDMMC_USE_DMA
-	err = HAL_SD_WriteBlocks_DMA(&priv->hsd, (uint8_t *)data_buf, start_sector,
-				 num_sector);
-#else
-	err = HAL_SD_WriteBlocks_IT(&priv->hsd, (uint8_t *)data_buf, start_sector,
-				 num_sector);
-#endif
+	err = stm32_sdmmc_write_blocks(&priv->hsd, (uint8_t *)data_buf, start_sector, num_sector);
 	if (err != HAL_OK) {
 		LOG_ERR("sd write block failed %d", err);
 		err = -EIO;
@@ -377,7 +472,7 @@ static int stm32_sdmmc_access_write(struct disk_info *disk,
 		goto end;
 	}
 
-	while (HAL_SD_GetCardState(&priv->hsd) != HAL_SD_CARD_TRANSFER) {
+	while (!stm32_sdmmc_is_card_in_transfer(&priv->hsd)) {
 	}
 
 end:
@@ -385,24 +480,33 @@ end:
 	return err;
 }
 
+static int stm32_sdmmc_get_card_info(HandleTypeDef *hsd, CardInfoTypeDef *info)
+{
+#ifdef CONFIG_SDMMC_STM32_EMMC
+	return HAL_MMC_GetCardInfo(hsd, info);
+#else
+	return HAL_SD_GetCardInfo(hsd, info);
+#endif
+}
+
 static int stm32_sdmmc_access_ioctl(struct disk_info *disk, uint8_t cmd,
 				    void *buff)
 {
 	const struct device *dev = disk->dev;
 	struct stm32_sdmmc_priv *priv = dev->data;
-	HAL_SD_CardInfoTypeDef info;
+	CardInfoTypeDef info;
 	int err;
 
 	switch (cmd) {
 	case DISK_IOCTL_GET_SECTOR_COUNT:
-		err = HAL_SD_GetCardInfo(&priv->hsd, &info);
+		err = stm32_sdmmc_get_card_info(&priv->hsd, &info);
 		if (err != HAL_OK) {
 			return -EIO;
 		}
 		*(uint32_t *)buff = info.LogBlockNbr;
 		break;
 	case DISK_IOCTL_GET_SECTOR_SIZE:
-		err = HAL_SD_GetCardInfo(&priv->hsd, &info);
+		err = stm32_sdmmc_get_card_info(&priv->hsd, &info);
 		if (err != HAL_OK) {
 			return -EIO;
 		}
@@ -414,6 +518,10 @@ static int stm32_sdmmc_access_ioctl(struct disk_info *disk, uint8_t cmd,
 	case DISK_IOCTL_CTRL_SYNC:
 		/* we use a blocking API, so nothing to do for sync */
 		break;
+	case DISK_IOCTL_CTRL_INIT:
+		return stm32_sdmmc_access_init(disk);
+	case DISK_IOCTL_CTRL_DEINIT:
+		return stm32_sdmmc_access_deinit(priv);
 	default:
 		return -EINVAL;
 	}
@@ -429,10 +537,17 @@ static const struct disk_operations stm32_sdmmc_ops = {
 };
 
 static struct disk_info stm32_sdmmc_info = {
-	.name = CONFIG_SDMMC_VOLUME_NAME,
+	.name = DT_INST_PROP_OR(0, disk_name, "SD"),
 	.ops = &stm32_sdmmc_ops,
 };
 
+
+#ifdef CONFIG_SDMMC_STM32_EMMC
+static bool stm32_sdmmc_card_present(struct stm32_sdmmc_priv *priv)
+{
+	return true;
+}
+#else /* CONFIG_SDMMC_STM32_EMMC */
 /*
  * Check if the card is present or not. If no card detect gpio is set, assume
  * the card is present. If reading the gpio fails for some reason, assume the
@@ -489,7 +604,7 @@ static int stm32_sdmmc_card_detect_init(struct stm32_sdmmc_priv *priv)
 		return 0;
 	}
 
-	if (!device_is_ready(priv->cd.port)) {
+	if (!gpio_is_ready_dt(&priv->cd)) {
 		return -ENODEV;
 	}
 
@@ -530,6 +645,7 @@ static int stm32_sdmmc_card_detect_uninit(struct stm32_sdmmc_priv *priv)
 	gpio_remove_callback(priv->cd.port, &priv->cd_cb);
 	return 0;
 }
+#endif /* !CONFIG_SDMMC_STM32_EMMC */
 
 static int stm32_sdmmc_pwr_init(struct stm32_sdmmc_priv *priv)
 {
@@ -539,7 +655,7 @@ static int stm32_sdmmc_pwr_init(struct stm32_sdmmc_priv *priv)
 		return 0;
 	}
 
-	if (!device_is_ready(priv->pe.port)) {
+	if (!gpio_is_ready_dt(&priv->pe)) {
 		return -ENODEV;
 	}
 
@@ -574,7 +690,10 @@ static int disk_stm32_sdmmc_init(const struct device *dev)
 		return -ENODEV;
 	}
 
-	k_work_init(&priv->work, stm32_sdmmc_cd_handler);
+	if (!device_is_ready(priv->reset.dev)) {
+		LOG_ERR("reset control device not ready");
+		return -ENODEV;
+	}
 
 	/* Configure dt provided device signals when available */
 	err = pinctrl_apply_state(priv->pcfg, PINCTRL_STATE_DEFAULT);
@@ -588,10 +707,14 @@ static int disk_stm32_sdmmc_init(const struct device *dev)
 	k_sem_init(&priv->thread_lock, 1, 1);
 	k_sem_init(&priv->sync, 0, 1);
 
+#if !defined(CONFIG_SDMMC_STM32_EMMC)
+	k_work_init(&priv->work, stm32_sdmmc_cd_handler);
+
 	err = stm32_sdmmc_card_detect_init(priv);
 	if (err) {
 		return err;
 	}
+#endif
 
 	err = stm32_sdmmc_pwr_init(priv);
 	if (err) {
@@ -614,11 +737,13 @@ static int disk_stm32_sdmmc_init(const struct device *dev)
 err_pwr:
 	stm32_sdmmc_pwr_uninit(priv);
 err_card_detect:
+#if !defined(CONFIG_SDMMC_STM32_EMMC)
 	stm32_sdmmc_card_detect_uninit(priv);
+#endif
 	return err;
 }
 
-#if DT_NODE_HAS_STATUS(DT_DRV_INST(0), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(0))
 
 #if STM32_SDMMC_USE_DMA
 
@@ -668,11 +793,16 @@ static void stm32_sdmmc_irq_config_func(const struct device *dev)
 #define SDMMC_BUS_WIDTH SDMMC_BUS_WIDE_8B
 #endif /* DT_INST_PROP(0, bus_width) */
 
+static struct stm32_pclken pclken_sdmmc[] = STM32_DT_INST_CLOCKS(0);
+
 static struct stm32_sdmmc_priv stm32_sdmmc_priv_1 = {
 	.irq_config = stm32_sdmmc_irq_config_func,
 	.hsd = {
 		.Instance = (MMC_TypeDef *)DT_INST_REG_ADDR(0),
 		.Init.BusWide = SDMMC_BUS_WIDTH,
+#if DT_INST_NODE_HAS_PROP(0, clk_div)
+		.Init.ClockDiv = DT_INST_PROP(0, clk_div),
+#endif
 	},
 #if DT_INST_NODE_HAS_PROP(0, cd_gpios)
 	.cd = GPIO_DT_SPEC_INST_GET(0, cd_gpios),
@@ -680,17 +810,15 @@ static struct stm32_sdmmc_priv stm32_sdmmc_priv_1 = {
 #if DT_INST_NODE_HAS_PROP(0, pwr_gpios)
 	.pe = GPIO_DT_SPEC_INST_GET(0, pwr_gpios),
 #endif
-	.pclken = {
-		.bus = DT_INST_CLOCKS_CELL(0, bus),
-		.enr = DT_INST_CLOCKS_CELL(0, bits),
-	},
+	.pclken = pclken_sdmmc,
 	.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(0),
+	.reset = RESET_DT_SPEC_INST_GET(0),
 	SDMMC_DMA_CHANNEL(rx, RX)
 	SDMMC_DMA_CHANNEL(tx, TX)
 };
 
 DEVICE_DT_INST_DEFINE(0, disk_stm32_sdmmc_init, NULL,
 		    &stm32_sdmmc_priv_1, NULL, POST_KERNEL,
-		    CONFIG_SDMMC_INIT_PRIORITY,
+		    CONFIG_SD_INIT_PRIORITY,
 		    NULL);
 #endif

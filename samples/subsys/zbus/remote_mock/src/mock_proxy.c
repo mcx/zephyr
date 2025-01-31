@@ -10,7 +10,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/zbus/zbus.h>
 LOG_MODULE_DECLARE(zbus, CONFIG_ZBUS_LOG_LEVEL);
 
@@ -83,9 +83,10 @@ static void proxy_callback(const struct zbus_channel *chan)
 
 ZBUS_LISTENER_DEFINE(proxy_lis, proxy_callback);
 
-void main(void)
+int main(void)
 {
 	LOG_DBG("[Mock Proxy] Started.");
+	return 0;
 }
 
 static void decode_sentence(struct net_buf_simple *rx_buf)
